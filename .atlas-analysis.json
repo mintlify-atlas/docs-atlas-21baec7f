@@ -1,0 +1,73 @@
+{
+  "projectType": "saas",
+  "projectName": "Tullidos SoloQ Ladder",
+  "projectDescription": "A custom League of Legends ladder tracker with real-time rankings, daily LP tracking, and player analytics.",
+  "theme": "aspen",
+  "primaryColor": "#d4af37",
+  "lightColor": "#60a5fa",
+  "darkColor": "#c084fc",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/ladder-tracking",
+              "features/player-management",
+              "features/daily-activity",
+              "features/rate-limiting"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/environment",
+              "configuration/deployment"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Endpoints",
+            "pages": [
+              "api/overview",
+              "api/ladder",
+              "api/player",
+              "api/friends",
+              "api/status"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Real-time ladder rankings based on SoloQ and Flex queue",
+    "Daily LP gain/loss tracking and highlights",
+    "Player profile management with custom emotes",
+    "Champion mastery and role detection",
+    "Intelligent rate limiting for Riot API",
+    "Automatic caching and fallback mechanisms"
+  ],
+  "publicApiSurface": [
+    "GET /api/ladder - Fetch ranked ladder with all players",
+    "GET /api/player - Get individual player data",
+    "GET /api/friends - List managed friends",
+    "POST /api/friends - Add new friend to track",
+    "DELETE /api/friends/:gameName/:tagLine - Remove friend",
+    "GET /api/status - Get system status and daily highlights",
+    "POST /api/force-refresh - Force full ladder refresh"
+  ]
+}
