@@ -1,0 +1,150 @@
+---
+title: Introduction
+description: Welcome to Tullidos SoloQ Ladder - Track your League of Legends custom ladder with real-time rankings and analytics
+---
+
+<img
+  className="block dark:hidden"
+  src="/images/hero-light.svg"
+  alt="Hero Light"
+/>
+<img
+  className="hidden dark:block"
+  src="/images/hero-dark.svg"
+  alt="Hero Dark"
+/>
+
+## What is Tullidos SoloQ Ladder?
+
+Tullidos SoloQ Ladder is a **custom League of Legends ladder tracker** that lets you monitor a personalized group of players with real-time rankings, daily LP tracking, and comprehensive player analytics.
+
+Perfect for friend groups, communities, or competitive teams who want to track their progress and compete on a custom leaderboard.
+
+<CardGroup cols={2}>
+  <Card
+    title="Quickstart"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Get up and running in under 5 minutes
+  </Card>
+  <Card
+    title="API Reference"
+    icon="code"
+    href="/api/overview"
+  >
+    Explore the REST API endpoints
+  </Card>
+  <Card
+    title="Features"
+    icon="star"
+    href="/features/ladder-tracking"
+  >
+    Discover what makes this ladder tracker powerful
+  </Card>
+  <Card
+    title="Configuration"
+    icon="gear"
+    href="/configuration/environment"
+  >
+    Learn how to configure and deploy
+  </Card>
+</CardGroup>
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Real-time Rankings" icon="trophy">
+    Automatic ladder rankings based on SoloQ and Flex queue performance
+  </Card>
+  <Card title="Daily LP Tracking" icon="chart-line">
+    Track daily LP gains and losses with highlights for best/worst performers
+  </Card>
+  <Card title="Player Analytics" icon="magnifying-glass-chart">
+    Champion mastery, role detection, and recent match history
+  </Card>
+  <Card title="Smart Rate Limiting" icon="shield">
+    Intelligent Riot API rate limiting with automatic caching and fallback
+  </Card>
+  <Card title="Custom Emotes" icon="face-smile">
+    Personalize player profiles with custom emotes
+  </Card>
+  <Card title="Auto Sync" icon="arrows-rotate">
+    Background refresh keeps data current without manual intervention
+  </Card>
+</CardGroup>
+
+## How It Works
+
+The ladder tracker consists of two main components:
+
+1. **Backend API** (Express.js) - Fetches data from Riot Games API, manages caching, handles rate limiting, and exposes REST endpoints
+2. **Frontend App** (React + Vite) - Displays the ladder, player cards, daily highlights, and interactive animations
+
+Players are managed through a friends list. The system automatically:
+- Fetches ranked data for each player
+- Calculates ladder positions based on SoloQ rank
+- Tracks daily LP changes
+- Detects champion pools and main roles
+- Caches data to minimize API calls
+
+<Note>
+You'll need a **Riot Games API key** to use this application. Get one from the [Riot Developer Portal](https://developer.riotgames.com/).
+</Note>
+
+## Architecture
+
+```
+┌─────────────────┐
+│  React Frontend │ ← User Interface
+└────────┬────────┘
+         │ HTTP
+         ▼
+┌─────────────────┐
+│  Express API    │ ← Rate limiting, caching
+└────────┬────────┘
+         │ HTTPS
+         ▼
+┌─────────────────┐
+│  Riot Games API │ ← Player data, match history
+└─────────────────┘
+```
+
+## Tech Stack
+
+<CardGroup cols={3}>
+  <Card title="Backend" icon="server">
+    - Node.js
+    - Express.js
+    - dotenv
+  </Card>
+  <Card title="Frontend" icon="browser">
+    - React 19
+    - Vite
+    - GSAP
+    - Motion
+  </Card>
+  <Card title="External" icon="globe">
+    - Riot Games API
+    - Data Dragon CDN
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card
+    title="Follow the Quickstart"
+    icon="play"
+    href="/quickstart"
+  >
+    Install dependencies and run your first ladder
+  </Card>
+  <Card
+    title="Configure Environment"
+    icon="key"
+    href="/configuration/environment"
+  >
+    Set up your Riot API key and customize settings
+  </Card>
+</CardGroup>

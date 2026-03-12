@@ -1,0 +1,220 @@
+---
+title: Environment Variables
+description: Configure your Tullidos SoloQ Ladder server with environment variables
+icon: 'sliders'
+---
+
+## Overview
+
+The Tullidos SoloQ Ladder server uses environment variables to configure API keys, caching behavior, rate limiting, and refresh intervals. All configuration is managed through a `.env` file in the `server/` directory.
+
+## Setup
+
+Copy the example environment file to create your configuration:
+
+```bash
+cp server/.env.example server/.env
+```
+
+Then edit `server/.env` with your actual values.
+
+## Environment Variables
+
+### RIOT_API_KEY
+
+<ParamField path="RIOT_API_KEY" type="string" required>
+  Your Riot Games API key for accessing the League of Legends API.
+  
+  **Required:** Yes  
+  **Default:** None  
+  **Example:** `RGAPI-12345678-abcd-1234-abcd-123456789abc`
+  
+  Without this key, the server will return errors for all ladder and player endpoints. You can obtain a development key from the [Riot Developer Portal](https://developer.riotgames.com/).
+  
+  <Warning>
+    **Never commit your API key to version control.** The `.env` file should be added to `.gitignore`.
+  </Warning>
+</ParamField>
+
+### PORT
+
+<ParamField path="PORT" type="number" default="3001">
+  The port number on which the Express server will listen.
+  
+  **Required:** No  
+  **Default:** `3001`  
+  **Example:** `PORT=3001`
+  
+  The server will be accessible at `http://localhost:<PORT>` when running locally.
+</ParamField>
+
+### LADDER_CACHE_TTL_MS
+
+<ParamField path="LADDER_CACHE_TTL_MS" type="number" default="60000">
+  Cache refresh interval in milliseconds for the ladder data.
+  
+  **Required:** No  
+  **Default:** `60000` (1 minute)  
+  **Example:** `LADDER_CACHE_TTL_MS=60000`
+  
+  This controls how frequently the server automatically refreshes player data in the background. A lower value means more up-to-date data but consumes more API rate limit.
+  
+  <Note>
+    The server uses a rotating refresh strategy, updating only a subset of players per refresh cycle (controlled by `FRIENDS_PER_REFRESH`) to conserve API quota.
+  </Note>
+</ParamField>
+
+### MATCH_SYNC_TTL_MS
+
+<ParamField path="MATCH_SYNC_TTL_MS" type="number" default="1800000">
+  Time-to-live in milliseconds for cached match data per player.
+  
+  **Required:** No  
+  **Default:** `1800000` (30 minutes)  
+  **Example:** `MATCH_SYNC_TTL_MS=1800000`
+  
+  When this TTL expires, the server will fetch fresh match history to update each player's champion pool and main role. Cached match data is used to derive:
+  - Top 3 champions played
+  - Main role/position
+  - Recent ranked match IDs
+</ParamField>
+
+### RATE_LIMIT_FALLBACK_MS
+
+<ParamField path="RATE_LIMIT_FALLBACK_MS" type="number" default="60000">
+  Fallback wait time in milliseconds when a 429 (rate limit) response is received without a `Retry-After` header.
+  
+  **Required:** No  
+  **Default:** `60000` (1 minute)  
+  **Example:** `RATE_LIMIT_FALLBACK_MS=60000`
+  
+  The server implements both proactive (sliding window) and reactive (429 response) rate limiting. If Riot's API returns a 429 without a specific retry duration, this value is used.
+  
+  <Info>
+    The server is configured for Riot's personal API key limits: 18 requests per second and 90 requests per 2 minutes, with safety margins.
+  </Info>
+</ParamField>
+
+### FRIENDS_PER_REFRESH
+
+<ParamField path="FRIENDS_PER_REFRESH" type="number" default="2">
+  Number of friends to refresh per automatic cache update cycle.
+  
+  **Required:** No  
+  **Default:** `2`  
+  **Minimum:** `1`  
+  **Example:** `FRIENDS_PER_REFRESH=2`
+  
+  To avoid exhausting your API rate limit, the server refreshes only a small batch of players each interval. The refresh cursor rotates through all players over time.
+  
+  **Calculation example:** With 10 friends and `FRIENDS_PER_REFRESH=2`, each friend gets updated every 5 refresh cycles.
+  
+  <Tip>
+    Increase this value if you have a production API key with higher rate limits. For development keys, keep it at 2-3 to stay within quota.
+  </Tip>
+</ParamField>
+
+## Complete Example
+
+Here's a complete `.env` file with all variables configured:
+
+```bash
+# Required - Get your key from https://developer.riotgames.com/
+RIOT_API_KEY=RGAPI-12345678-abcd-1234-abcd-123456789abc
+
+# Server port (optional)
+PORT=3001
+
+# Cache refresh interval - 1 minute
+LADDER_CACHE_TTL_MS=60000
+
+# Match data TTL - 30 minutes
+MATCH_SYNC_TTL_MS=1800000
+
+# Rate limit fallback - 1 minute
+RATE_LIMIT_FALLBACK_MS=60000
+
+# Players to refresh per cycle
+FRIENDS_PER_REFRESH=2
+```
+
+## Configuration Tips
+
+<AccordionGroup>
+  <Accordion title="Optimizing for Small Friend Lists (< 10 players)">
+    For smaller ladders, you can afford more frequent updates:
+    
+    ```bash
+    LADDER_CACHE_TTL_MS=30000
+    FRIENDS_PER_REFRESH=3
+    ```
+  </Accordion>
+  
+  <Accordion title="Optimizing for Large Friend Lists (> 20 players)">
+    For larger ladders with development keys, reduce refresh frequency:
+    
+    ```bash
+    LADDER_CACHE_TTL_MS=120000
+    FRIENDS_PER_REFRESH=2
+    MATCH_SYNC_TTL_MS=3600000
+    ```
+  </Accordion>
+  
+  <Accordion title="Production API Key Configuration">
+    If you have a production API key with higher limits:
+    
+    ```bash
+    LADDER_CACHE_TTL_MS=30000
+    FRIENDS_PER_REFRESH=5
+    MATCH_SYNC_TTL_MS=1800000
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Runtime Files
+
+The server creates and maintains several files during operation:
+
+- **`ladder-cache.json`** - Persistent cache of player data, match history, and daily LP tracking
+- **`api-stats.json`** - Request counters and daily API usage statistics
+- **`friends.json`** - Your friends list with auto-updated PUUIDs
+
+<Warning>
+  These files are automatically managed by the server. Don't edit them manually while the server is running.
+</Warning>
+
+## Verification
+
+After configuring your environment variables, verify your setup:
+
+```bash
+cd server
+npm run start
+```
+
+Check the console output:
+
+```
+Server running on http://localhost:3001
+DDragon version: 14.24.1
+Loaded ladder cache from file: 10 players, 10 raw-data entries
+```
+
+Visit the status endpoint to confirm configuration:
+
+```bash
+curl http://localhost:3001/api/status
+```
+
+You should see rate limit budgets, cache stats, and daily highlights in the response.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Deployment" icon="rocket" href="/configuration/deployment">
+    Learn how to deploy your configured server to production
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Explore the available API endpoints
+  </Card>
+</CardGroup>

@@ -1,0 +1,518 @@
+---
+title: Deployment
+description: Deploy your Tullidos SoloQ Ladder to production
+icon: 'rocket'
+---
+
+## Overview
+
+This guide covers deploying both the backend API server and frontend client to production. The application consists of two parts:
+
+- **Backend:** Node.js/Express server (default port 3001)
+- **Frontend:** React SPA built with Vite (static files)
+
+## Prerequisites
+
+Before deploying, ensure you have:
+
+- A Riot Games API key (development or production)
+- Node.js 20+ installed on your deployment target
+- Basic knowledge of your chosen hosting platform
+
+## Building for Production
+
+<Steps>
+  <Step title="Install dependencies">
+    Install all required packages for both client and server:
+    
+    ```bash
+    # Backend dependencies
+    cd server
+    npm install
+    
+    # Frontend dependencies
+    cd ../client
+    npm install
+    ```
+  </Step>
+  
+  <Step title="Configure environment">
+    Create and configure your production `.env` file:
+    
+    ```bash
+    cd server
+    cp .env.example .env
+    ```
+    
+    Edit `server/.env` with your production values:
+    
+    ```bash
+    RIOT_API_KEY=your_production_api_key_here
+    PORT=3001
+    LADDER_CACHE_TTL_MS=60000
+    MATCH_SYNC_TTL_MS=1800000
+    RATE_LIMIT_FALLBACK_MS=60000
+    FRIENDS_PER_REFRESH=2
+    ```
+    
+    <Warning>
+      **Never commit `.env` files to version control.** Use your platform's secret management features.
+    </Warning>
+  </Step>
+  
+  <Step title="Build the frontend">
+    Build the React application for production:
+    
+    ```bash
+    cd client
+    npm run build
+    ```
+    
+    This creates optimized static files in `client/dist/`.
+    
+    <Info>
+      The build process includes:
+      - Code minification and bundling
+      - Asset optimization
+      - Production React builds
+      - Tree-shaking unused code
+    </Info>
+  </Step>
+  
+  <Step title="Serve the frontend">
+    The backend server automatically serves static files from `server/public/`. Copy the build output:
+    
+    ```bash
+    # From the project root
+    cp -r client/dist/* server/public/
+    ```
+    
+    Or create a build script in `package.json`:
+    
+    ```json
+    {
+      "scripts": {
+        "build:client": "cd client && npm run build && cp -r dist/* ../server/public/"
+      }
+    }
+    ```
+  </Step>
+</Steps>
+
+## Deployment Options
+
+<Tabs>
+  <Tab title="Railway">
+    Railway provides zero-config deployments with automatic HTTPS.
+    
+    ### Setup
+    
+    1. Install Railway CLI:
+       ```bash
+       npm install -g @railway/cli
+       ```
+    
+    2. Login and initialize:
+       ```bash
+       railway login
+       railway init
+       ```
+    
+    3. Add environment variables in Railway dashboard:
+       - `RIOT_API_KEY`
+       - `PORT` (Railway auto-assigns, or use 3001)
+       - Other optional variables
+    
+    4. Create `railway.json` in your server directory:
+       ```json
+       {
+         "build": {
+           "builder": "NIXPACKS",
+           "buildCommand": "cd ../client && npm install && npm run build && mkdir -p ../server/public && cp -r dist/* ../server/public/ && cd ../server && npm install"
+         },
+         "deploy": {
+           "startCommand": "npm run start",
+           "restartPolicyType": "ON_FAILURE"
+         }
+       }
+       ```
+    
+    5. Deploy:
+       ```bash
+       railway up
+       ```
+    
+    <Tip>
+      Railway automatically provides persistent volumes for `ladder-cache.json` and `api-stats.json`.
+    </Tip>
+  </Tab>
+  
+  <Tab title="Render">
+    Render offers free-tier deployments with automatic SSL.
+    
+    ### Setup
+    
+    1. Create a new Web Service on Render
+    2. Connect your Git repository
+    3. Configure build settings:
+       - **Build Command:**
+         ```bash
+         cd client && npm install && npm run build && mkdir -p ../server/public && cp -r dist/* ../server/public/ && cd ../server && npm install
+         ```
+       - **Start Command:**
+         ```bash
+         cd server && npm run start
+         ```
+    
+    4. Add environment variables in Render dashboard:
+       - `RIOT_API_KEY` (your API key)
+       - `NODE_ENV=production`
+    
+    5. Deploy
+    
+    <Note>
+      Render's free tier may spin down after inactivity. Cache files persist using Render Disks.
+    </Note>
+  </Tab>
+  
+  <Tab title="Vercel">
+    Vercel is optimized for frontend deployments. You'll need a separate backend host.
+    
+    ### Frontend on Vercel
+    
+    1. Deploy the client:
+       ```bash
+       cd client
+       vercel
+       ```
+    
+    2. Configure `vercel.json`:
+       ```json
+       {
+         "buildCommand": "npm run build",
+         "outputDirectory": "dist",
+         "devCommand": "npm run dev"
+       }
+       ```
+    
+    ### Backend Separately
+    
+    Deploy the server to Railway/Render and update the frontend API URL in your Vite config:
+    
+    ```javascript
+    // client/vite.config.js
+    export default defineConfig({
+      // ... other config
+      define: {
+        'import.meta.env.VITE_API_URL': JSON.stringify('https://your-backend.railway.app')
+      }
+    })
+    ```
+  </Tab>
+  
+  <Tab title="VPS / Self-Hosted">
+    For full control, deploy to your own Virtual Private Server.
+    
+    ### Setup with PM2
+    
+    1. SSH into your server and clone the repository:
+       ```bash
+       git clone <your-repo-url>
+       cd tullidos-soloq-ladder
+       ```
+    
+    2. Build the application:
+       ```bash
+       cd client
+       npm install
+       npm run build
+       mkdir -p ../server/public
+       cp -r dist/* ../server/public/
+       
+       cd ../server
+       npm install
+       ```
+    
+    3. Install PM2 process manager:
+       ```bash
+       npm install -g pm2
+       ```
+    
+    4. Create `ecosystem.config.js`:
+       ```javascript
+       module.exports = {
+         apps: [{
+           name: 'soloq-ladder',
+           script: './server/index.js',
+           env: {
+             NODE_ENV: 'production',
+             PORT: 3001
+           },
+           env_file: './server/.env',
+           instances: 1,
+           autorestart: true,
+           watch: false,
+           max_memory_restart: '500M'
+         }]
+       };
+       ```
+    
+    5. Start the application:
+       ```bash
+       pm2 start ecosystem.config.js
+       pm2 save
+       pm2 startup
+       ```
+    
+    ### Nginx Reverse Proxy
+    
+    ```nginx
+    server {
+        listen 80;
+        server_name your-domain.com;
+        
+        location / {
+            proxy_pass http://localhost:3001;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection 'upgrade';
+            proxy_set_header Host $host;
+            proxy_cache_bypass $http_upgrade;
+        }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Security Considerations
+
+<Warning>
+  **Critical Security Practices:**
+  
+  - Never expose your `RIOT_API_KEY` in client-side code
+  - Always use environment variables for secrets
+  - Add `.env` to `.gitignore`
+  - Use HTTPS in production (most platforms provide this automatically)
+  - Regularly rotate your API keys
+</Warning>
+
+### API Key Protection
+
+The server architecture keeps your API key secure:
+
+- ✅ API key is only used server-side (`server/index.js:616-619`)
+- ✅ Frontend makes requests to your backend, never directly to Riot
+- ✅ `.env` file is never committed or exposed
+
+### File Permissions
+
+Ensure runtime files are writable by the server process:
+
+```bash
+chmod 644 server/.env
+chmod 755 server/
+```
+
+The server automatically creates and manages:
+- `ladder-cache.json` (persistent player cache)
+- `api-stats.json` (API usage tracking)
+- `friends.json` (friends list with PUUIDs)
+
+## Monitoring and Logs
+
+### API Statistics
+
+The server tracks API usage in `api-stats.json`:
+
+```json
+{
+  "totalRiotRequests": 1523,
+  "perDay": {
+    "2026-03-12": 145,
+    "2026-03-11": 198
+  },
+  "updatedAt": "2026-03-12T10:30:00.000Z"
+}
+```
+
+### Status Endpoint
+
+Monitor your deployment health:
+
+```bash
+curl https://your-domain.com/api/status
+```
+
+Response includes:
+- Rate limit status and remaining budget
+- Total and daily API request counts
+- Cache statistics
+- Daily highlights
+- Last refresh timestamp
+
+<Info>
+  The `/api/status` endpoint is useful for uptime monitoring services like UptimeRobot or Pingdom.
+</Info>
+
+### Persistent Cache
+
+The server persists cache to `ladder-cache.json` to survive restarts:
+
+- Player data with ranks and LP
+- Match history (last 20 games per player)
+- Daily LP tracking (14 days)
+- Raw API responses for fallback
+
+<Tip>
+  On deployment platforms, ensure the server directory is persistent or use a volume mount to preserve cache files across deployments.
+</Tip>
+
+## Performance Optimization
+
+### Rate Limit Management
+
+The server implements sophisticated rate limiting:
+
+1. **Proactive throttling:** Sliding window prevents exceeding 18 req/s and 90 req/2min
+2. **Reactive handling:** Automatic backoff when 429 responses occur
+3. **Batch refreshing:** Only `FRIENDS_PER_REFRESH` players updated per cycle
+4. **Persistent fallback:** Cached data used when rate limited
+
+### Caching Strategy
+
+```javascript
+// Default cache durations (server/index.js:22-25)
+LADDER_CACHE_TTL_MS=60000        // Full ladder refresh: 1 minute
+MATCH_SYNC_TTL_MS=1800000        // Match data: 30 minutes
+RATE_LIMIT_FALLBACK_MS=60000     // Retry after 429: 1 minute
+FRIENDS_PER_REFRESH=2            // Players per cycle: 2
+```
+
+Adjust these based on your API key tier and player count.
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="500 Error: Missing RIOT_API_KEY">
+    **Cause:** Environment variable not set
+    
+    **Solution:**
+    ```bash
+    # Check if .env exists
+    ls -la server/.env
+    
+    # Verify contents
+    cat server/.env
+    
+    # Ensure RIOT_API_KEY is set
+    echo $RIOT_API_KEY
+    ```
+    
+    On hosting platforms, add the variable through their dashboard.
+  </Accordion>
+  
+  <Accordion title="Empty Ladder / No Players Showing">
+    **Cause:** Cache not populated or friends.json empty
+    
+    **Solution:**
+    1. Check if `server/friends.json` exists and has entries
+    2. Trigger a manual refresh:
+       ```bash
+       curl -X POST http://localhost:3001/api/force-refresh
+       ```
+    3. Check server logs for API errors
+  </Accordion>
+  
+  <Accordion title="Rate Limited / 429 Errors">
+    **Cause:** Too many API requests
+    
+    **Solution:**
+    - Increase `LADDER_CACHE_TTL_MS` to reduce refresh frequency
+    - Decrease `FRIENDS_PER_REFRESH` to update fewer players per cycle
+    - Check `/api/status` for rate limit status
+    - Wait for the rate limit window to reset (shown in status)
+  </Accordion>
+  
+  <Accordion title="Stale Data / Players Not Updating">
+    **Cause:** Cache TTL too long or refresh not running
+    
+    **Solution:**
+    ```bash
+    # Force immediate refresh
+    curl -X POST http://localhost:3001/api/force-refresh
+    
+    # Check last update time
+    curl http://localhost:3001/api/status | grep lastUpdatedAt
+    ```
+    
+    Adjust `LADDER_CACHE_TTL_MS` and `FRIENDS_PER_REFRESH` for your needs.
+  </Accordion>
+  
+  <Accordion title="Frontend Shows CORS Errors">
+    **Cause:** Frontend and backend on different origins
+    
+    **Solution:**
+    The server already has CORS enabled (`server/index.js:11`). Ensure:
+    - Frontend is served from the same domain, OR
+    - Frontend API calls use the correct backend URL, OR
+    - Deploy frontend to `server/public/` to serve from same origin
+  </Accordion>
+</AccordionGroup>
+
+## Post-Deployment Checklist
+
+<Steps>
+  <Step title="Verify API connectivity">
+    ```bash
+    curl https://your-domain.com/
+    # Should return: {"ok":true,"message":"SoloQ Ladder API running"}
+    ```
+  </Step>
+  
+  <Step title="Check status endpoint">
+    ```bash
+    curl https://your-domain.com/api/status
+    ```
+    Verify rate limits, cache status, and recent updates.
+  </Step>
+  
+  <Step title="Test ladder endpoint">
+    ```bash
+    curl https://your-domain.com/api/ladder
+    ```
+    Should return player array with ranks and stats.
+  </Step>
+  
+  <Step title="Monitor logs">
+    Check your platform's log viewer for:
+    - DDragon version loaded
+    - Cache loaded from file
+    - Server startup on correct port
+    - No API key errors
+  </Step>
+  
+  <Step title="Set up monitoring">
+    Configure uptime monitoring for:
+    - Main endpoint: `https://your-domain.com/`
+    - Status check: `https://your-domain.com/api/status`
+    
+    Alert on consecutive failures or response time > 5s.
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Environment Variables" icon="sliders" href="/configuration/environment">
+    Fine-tune your server configuration
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Explore available endpoints
+  </Card>
+  <Card title="Rate Limiting" icon="shield" href="/features/rate-limiting">
+    Understand the caching and rate limiting system
+  </Card>
+  <Card title="Player Management" icon="users" href="/features/player-management">
+    Learn about managing players in your ladder
+  </Card>
+</CardGroup>

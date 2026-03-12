@@ -1,0 +1,457 @@
+---
+title: Daily Activity Tracking
+description: Track LP gains and losses throughout the day with automatic delta calculation and daily highlights
+icon: calendar-day
+---
+
+The daily activity system monitors LP changes in real-time, calculates deltas between updates, and generates daily highlight statistics showing who's climbing and who's struggling.
+
+## How Daily Tracking Works
+
+Every time the ladder refreshes, the system snapshots each player's current LP and calculates the delta (change) since the last update within the same day.
+
+### Core Tracking Function
+
+```javascript server/index.js (lines 311-381)
+function updateDailyLpTracker(players) {
+  const todayKey = getDateKey();
+  const dailyMap = ladderCache.dailyLpByDate[todayKey] || (ladderCache.dailyLpByDate[todayKey] = {});
+  const snapshotByPlayer = ladderCache.lpSnapshotByPlayer || (ladderCache.lpSnapshotByPlayer = {});
+  const nowIso = new Date().toISOString();
+
+  for (const player of players || []) {
+    if (!player || player.error) continue;
+    const key = getDailyPlayerKey(player);
+    if (!key) continue;
+
+    const soloLp = Number(player?.soloq?.leaguePoints);
+    const flexLp = Number(player?.flex?.leaguePoints);
+
+    const entry = dailyMap[key] || {
+      puuid: player.puuid || null,
+      riotId: player.riotId || "Unknown",
+      soloqStartLp: Number.isFinite(soloLp) ? soloLp : null,
+      soloqCurrentLp: Number.isFinite(soloLp) ? soloLp : null,
+      soloqDeltaLp: 0,
+      flexStartLp: Number.isFinite(flexLp) ? flexLp : null,
+      flexCurrentLp: Number.isFinite(flexLp) ? flexLp : null,
+      flexDeltaLp: 0,
+      firstSeenAt: nowIso,
+      lastSeenAt: nowIso,
+    };
+
+    const playerSnapshot = snapshotByPlayer[key] || {
+      soloqLp: null,
+      flexLp: null,
+      lastDateKey: null,
+      lastSeenAt: null,
+    };
+
+    entry.riotId = player.riotId || entry.riotId;
+    entry.puuid = player.puuid || entry.puuid;
+
+    if (Number.isFinite(soloLp)) {
+      if (entry.soloqStartLp === null) entry.soloqStartLp = soloLp;
+      const prevSolo = Number(playerSnapshot.soloqLp);
+      if (Number.isFinite(prevSolo) && playerSnapshot.lastDateKey === todayKey) {
+        entry.soloqDeltaLp = Number(entry.soloqDeltaLp || 0) + (soloLp - prevSolo);
+      }
+      entry.soloqCurrentLp = soloLp;
+      playerSnapshot.soloqLp = soloLp;
+    }
+
+    if (Number.isFinite(flexLp)) {
+      if (entry.flexStartLp === null) entry.flexStartLp = flexLp;
+      const prevFlex = Number(playerSnapshot.flexLp);
+      if (Number.isFinite(prevFlex) && playerSnapshot.lastDateKey === todayKey) {
+        entry.flexDeltaLp = Number(entry.flexDeltaLp || 0) + (flexLp - prevFlex);
+      }
+      entry.flexCurrentLp = flexLp;
+      playerSnapshot.flexLp = flexLp;
+    }
+
+    entry.lastSeenAt = nowIso;
+    playerSnapshot.lastDateKey = todayKey;
+    playerSnapshot.lastSeenAt = nowIso;
+    dailyMap[key] = entry;
+    snapshotByPlayer[key] = playerSnapshot;
+  }
+
+  // Keep only the last 14 days to avoid unbounded growth.
+  const days = Object.keys(ladderCache.dailyLpByDate).sort();
+  while (days.length > 14) {
+    const oldest = days.shift();
+    delete ladderCache.dailyLpByDate[oldest];
+  }
+}
+```
+
+<Info>
+The function is called automatically during every ladder refresh at `server/index.js:1017`.
+</Info>
+
+## LP Delta Calculation
+
+The system tracks LP changes incrementally throughout the day:
+
+<Steps>
+  <Step title="Capture Starting LP">
+    The first time a player is seen each day, their current LP becomes their `startLp` baseline.
+  </Step>
+  
+  <Step title="Track Previous Snapshot">
+    Each update checks the player's LP from the last refresh (stored in `lpSnapshotByPlayer`).
+  </Step>
+  
+  <Step title="Calculate Incremental Delta">
+    The difference between current LP and previous LP is **added** to the cumulative `deltaLp`.
+  </Step>
+  
+  <Step title="Update Current LP">
+    The player's current LP is saved for the next delta calculation.
+  </Step>
+</Steps>
+
+### Example Delta Flow
+
+```javascript
+// First refresh of the day:
+entry.soloqStartLp = 120
+entry.soloqCurrentLp = 120
+entry.soloqDeltaLp = 0
+
+// After a win (+18 LP):
+prevSolo = 120
+soloLp = 138
+entry.soloqDeltaLp = 0 + (138 - 120) = +18
+entry.soloqCurrentLp = 138
+
+// After a loss (-16 LP):
+prevSolo = 138
+soloLp = 122
+entry.soloqDeltaLp = 18 + (122 - 138) = +2
+entry.soloqCurrentLp = 122
+```
+
+<Note>
+Deltas are cumulative. A player who gains 30 LP and then loses 10 LP will show a net delta of +20 LP.
+</Note>
+
+## Daily Highlights
+
+The system generates daily highlight stats to identify top performers and struggling players:
+
+```javascript server/index.js (lines 383-506)
+function buildDailyHighlights() {
+  const todayKey = getDateKey();
+  const dailyMap = ladderCache.dailyLpByDate[todayKey] || {};
+  const entries = Object.values(dailyMap);
+
+  let bestSoloqGain = null;
+  let bestFlexGain = null;
+  let worstSoloqLoss = null;
+  let bestOverallGain = null;
+  let worstOverallLoss = null;
+
+  for (const row of entries) {
+    let hasAnyQueue = false;
+    let totalDelta = 0;
+
+    if (Number.isFinite(row.soloqStartLp) && Number.isFinite(row.soloqCurrentLp)) {
+      const delta = Number.isFinite(Number(row.soloqDeltaLp))
+        ? Number(row.soloqDeltaLp)
+        : (row.soloqCurrentLp - row.soloqStartLp);
+      hasAnyQueue = true;
+      totalDelta += delta;
+      if (!bestSoloqGain || delta > bestSoloqGain.deltaLp) {
+        bestSoloqGain = { player: row.riotId, deltaLp: delta, currentLp: row.soloqCurrentLp };
+      }
+      if (!worstSoloqLoss || delta < worstSoloqLoss.deltaLp) {
+        worstSoloqLoss = { player: row.riotId, deltaLp: delta, currentLp: row.soloqCurrentLp };
+      }
+    }
+
+    if (Number.isFinite(row.flexStartLp) && Number.isFinite(row.flexCurrentLp)) {
+      const delta = Number.isFinite(Number(row.flexDeltaLp))
+        ? Number(row.flexDeltaLp)
+        : (row.flexCurrentLp - row.flexStartLp);
+      hasAnyQueue = true;
+      totalDelta += delta;
+      if (!bestFlexGain || delta > bestFlexGain.deltaLp) {
+        bestFlexGain = { player: row.riotId, deltaLp: delta, currentLp: row.flexCurrentLp };
+      }
+    }
+
+    if (hasAnyQueue) {
+      if (!bestOverallGain || totalDelta > bestOverallGain.deltaLp) {
+        bestOverallGain = { player: row.riotId, deltaLp: totalDelta };
+      }
+      if (!worstOverallLoss || totalDelta < worstOverallLoss.deltaLp) {
+        worstOverallLoss = { player: row.riotId, deltaLp: totalDelta };
+      }
+    }
+  }
+  // Fallback logic omitted for brevity
+  return {
+    date: todayKey,
+    bestSoloqGain,
+    bestFlexGain,
+    worstSoloqLoss,
+    bestOverallGain,
+    worstOverallLoss,
+  };
+}
+```
+
+### Highlight Categories
+
+<CardGroup cols={2}>
+  <Card title="Best SoloQ Gain" icon="trophy">
+    Player with the highest positive LP change in SoloQ today.
+  </Card>
+  <Card title="Best Flex Gain" icon="star">
+    Player with the highest positive LP change in Flex queue today.
+  </Card>
+  <Card title="Worst SoloQ Loss" icon="triangle-exclamation">
+    Player with the most negative LP change in SoloQ today.
+  </Card>
+  <Card title="Best Overall Gain" icon="chart-line">
+    Player with the highest combined LP change across all queues.
+  </Card>
+  <Card title="Worst Overall Loss" icon="chart-line-down">
+    Player with the most negative combined LP change.
+  </Card>
+</CardGroup>
+
+## Fallback Highlights
+
+If daily tracking data is empty (e.g., on the first run of the day), the system generates neutral highlights based on current ladder standings:
+
+```javascript server/index.js (lines 436-496)
+if (!bestSoloqGain || !worstSoloqLoss || !bestFlexGain) {
+  const rankedSolo = (ladderCache.players || [])
+    .filter((p) => p && !p.error && p.soloq)
+    .sort((a, b) => rankScore(b) - rankScore(a));
+
+  const rankedFlex = (ladderCache.players || [])
+    .filter((p) => p && !p.error && p.flex)
+    .sort((a, b) => {
+      const aTier = TIER_ORDER.indexOf(a.flex.tier);
+      const bTier = TIER_ORDER.indexOf(b.flex.tier);
+      const aRank = RANK_ORDER.indexOf(a.flex.rank);
+      const bRank = RANK_ORDER.indexOf(b.flex.rank);
+      const aLp = Number(a.flex.leaguePoints) || 0;
+      const bLp = Number(b.flex.leaguePoints) || 0;
+      return ((TIER_ORDER.length - bTier) * 10000 + (RANK_ORDER.length - bRank) * 100 + bLp)
+        - ((TIER_ORDER.length - aTier) * 10000 + (RANK_ORDER.length - aRank) * 100 + aLp);
+    });
+
+  if (!bestSoloqGain && rankedSolo.length > 0) {
+    const p = rankedSolo[0];
+    bestSoloqGain = {
+      player: p.riotId,
+      deltaLp: 0,
+      currentLp: Number(p?.soloq?.leaguePoints) || 0,
+    };
+  }
+  // Additional fallback logic...
+}
+```
+
+<Warning>
+Fallback highlights show a `deltaLp` of 0 and represent the current ladder leaders rather than actual daily gains.
+</Warning>
+
+## Data Structure
+
+### Daily LP Map Entry
+
+```javascript
+{
+  "puuid": "abc123...",
+  "riotId": "Azpy#1337",
+  "soloqStartLp": 120,
+  "soloqCurrentLp": 138,
+  "soloqDeltaLp": 18,
+  "flexStartLp": null,
+  "flexCurrentLp": null,
+  "flexDeltaLp": 0,
+  "firstSeenAt": "2026-03-12T08:00:00.000Z",
+  "lastSeenAt": "2026-03-12T14:30:00.000Z"
+}
+```
+
+### Player Snapshot
+
+```javascript
+{
+  "soloqLp": 138,
+  "flexLp": null,
+  "lastDateKey": "2026-03-12",
+  "lastSeenAt": "2026-03-12T14:30:00.000Z"
+}
+```
+
+<Accordion title="Why Two Snapshots?">
+- **Daily LP Map**: Stores today's full tracking data (start LP, current LP, delta).
+- **Player Snapshot**: Stores the previous refresh's LP to calculate incremental deltas.
+
+This dual-snapshot approach prevents recalculating deltas from the start LP every time, which would lose information about intermediate updates.
+</Accordion>
+
+## Date Key Format
+
+Daily data is indexed by date keys in `YYYY-MM-DD` format:
+
+```javascript server/index.js (lines 39-44)
+function getDateKey(date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+```
+
+<Info>
+All dates use the server's local timezone. Make sure your server timezone is set correctly for accurate daily resets.
+</Info>
+
+## Data Retention
+
+To prevent unbounded memory growth, the system keeps only the last **14 days** of daily LP data:
+
+```javascript server/index.js (lines 376-380)
+const days = Object.keys(ladderCache.dailyLpByDate).sort();
+while (days.length > 14) {
+  const oldest = days.shift();
+  delete ladderCache.dailyLpByDate[oldest];
+}
+```
+
+<Tip>
+If you need long-term historical data, consider exporting `dailyLpByDate` to a database before the 14-day window expires.
+</Tip>
+
+## Accessing Daily Highlights
+
+### GET /api/status
+
+The daily highlights are included in the status endpoint response:
+
+```javascript server/index.js (lines 1200-1238)
+app.get("/api/status", (req, res) => {
+  const todayKey = getDateKey();
+  const hasTodayDailyMap = Boolean(ladderCache.dailyLpByDate[todayKey])
+    && Object.keys(ladderCache.dailyLpByDate[todayKey]).length > 0;
+
+  if (!hasTodayDailyMap && Array.isArray(ladderCache.players) && ladderCache.players.length > 0) {
+    updateDailyLpTracker(ladderCache.players);
+    saveCacheToFile();
+  }
+
+  // ...
+  res.json({
+    ok: true,
+    // ... other status fields
+    dailyHighlights: buildDailyHighlights(),
+    // ...
+  });
+});
+```
+
+### Example Response
+
+```json
+{
+  "ok": true,
+  "dailyHighlights": {
+    "date": "2026-03-12",
+    "bestSoloqGain": {
+      "player": "Azpy#1337",
+      "deltaLp": 42,
+      "currentLp": 162
+    },
+    "bestFlexGain": {
+      "player": "Hachitas#norge",
+      "deltaLp": 28,
+      "currentLp": 88
+    },
+    "worstSoloqLoss": {
+      "player": "Ryt#euw",
+      "deltaLp": -35,
+      "currentLp": 45
+    },
+    "bestOverallGain": {
+      "player": "Azpy#1337",
+      "deltaLp": 42
+    },
+    "worstOverallLoss": {
+      "player": "Ryt#euw",
+      "deltaLp": -35
+    }
+  }
+}
+```
+
+## Frontend Integration
+
+The frontend displays daily highlights in the activity section:
+
+```javascript client/src/App.jsx (lines 755-760)
+const dailyHighlights = apiStatus?.dailyHighlights || null;
+const bestOverallToday = dailyHighlights?.bestOverallGain || null;
+const bestSoloToday = dailyHighlights?.bestSoloqGain || null;
+const bestFlexToday = dailyHighlights?.bestFlexGain || null;
+const worstSoloToday = dailyHighlights?.worstSoloqLoss || null;
+const worstOverallToday = dailyHighlights?.worstOverallLoss || null;
+```
+
+<Note>
+The frontend polls `/api/status` every 15 seconds to keep daily highlights updated in real-time (see `client/src/App.jsx:524-556`).
+</Note>
+
+## Edge Cases
+
+<Accordion title="Player Plays Multiple Queues">
+Both SoloQ and Flex deltas are tracked separately. The `bestOverallGain` and `worstOverallLoss` combine both queues:
+
+```javascript
+totalDelta = soloqDelta + flexDelta
+```
+</Accordion>
+
+<Accordion title="Player Not Seen Today">
+If a player hasn't been refreshed yet today, they won't appear in the daily LP map for the current day. They will be added on their first refresh.
+</Accordion>
+
+<Accordion title="Midnight Rollover">
+When the date changes, the system creates a new daily map. Previous day data remains in memory for 14 days before being purged.
+</Accordion>
+
+<Accordion title="PUUID vs Riot ID Tracking">
+Daily keys prefer PUUID over Riot ID:
+
+```javascript server/index.js (lines 305-309)
+function getDailyPlayerKey(player) {
+  if (player?.puuid) return `puuid:${player.puuid}`;
+  if (player?.riotId) return `riot:${String(player.riotId).toLowerCase()}`;
+  return null;
+}
+```
+
+This ensures tracking continues even if a player changes their name mid-day.
+</Accordion>
+
+## Related Features
+
+<CardGroup cols={2}>
+  <Card title="Ladder Tracking" icon="chart-line" href="/features/ladder-tracking">
+    See how rankings are calculated
+  </Card>
+  <Card title="Player Management" icon="users" href="/features/player-management">
+    Learn about PUUID and Riot ID tracking
+  </Card>
+  <Card title="Rate Limiting" icon="shield" href="/features/rate-limiting">
+    Understand refresh frequency and API usage
+  </Card>
+</CardGroup>

@@ -1,0 +1,437 @@
+---
+title: Player Management
+description: Add, track, and manage players using PUUIDs, Riot IDs, and custom emotes
+icon: users
+---
+
+The player management system allows you to track your League of Legends friends using either their **Riot ID** (gameName#tagLine) or their persistent **PUUID**. The system automatically handles name changes and supports custom emotes.
+
+## Player Storage Format
+
+Players are stored in `friends.json` with automatic PUUID resolution:
+
+```json friends.json
+[
+  {
+    "gameName": "Azpy",
+    "tagLine": "1337",
+    "puuid": "abc123...",
+    "mote": "🎮"
+  },
+  {
+    "gameName": "Hachitas",
+    "tagLine": "norge",
+    "puuid": "def456..."
+  }
+]
+```
+
+<Info>
+The `puuid` field is automatically populated and updated when you add a player or when the system refreshes ladder data.
+</Info>
+
+## Adding Players
+
+### POST /api/friends
+
+Add a new player to your tracking list:
+
+```javascript server/index.js (lines 1132-1168)
+app.post("/api/friends", async (req, res) => {
+  const { gameName, tagLine, emote, mote } = req.body;
+  if (!gameName || !tagLine) {
+    return res.status(400).json({ error: "gameName y tagLine son obligatorios" });
+  }
+  let friends;
+  try {
+    friends = JSON.parse(fs.readFileSync(FRIENDS_FILE, "utf8"));
+  } catch {
+    friends = [];
+  }
+  const exists = friends.some(
+    (f) => f.gameName.toLowerCase() === gameName.toLowerCase() &&
+           f.tagLine.toLowerCase() === tagLine.toLowerCase()
+  );
+  if (exists) {
+    return res.status(409).json({ error: "Ese jugador ya está en la lista" });
+  }
+  const friend = { gameName, tagLine };
+  const friendEmote =
+    (typeof emote === "string" && emote.trim())
+      ? emote.trim()
+      : (typeof mote === "string" && mote.trim() ? mote.trim() : null);
+  if (friendEmote) friend.mote = friendEmote;
+  friends.push(friend);
+  fs.writeFileSync(FRIENDS_FILE, JSON.stringify(friends, null, 2));
+
+  try {
+    if (RIOT_API_KEY) {
+      await refreshLadderCache();
+    }
+  } catch (error) {
+    console.error("ERROR refreshing ladder cache after add:", error.message);
+  }
+
+  res.status(201).json({ ok: true });
+});
+```
+
+<Steps>
+  <Step title="Validate Riot ID">
+    Both `gameName` and `tagLine` are required. The endpoint returns a 400 error if either is missing.
+  </Step>
+  
+  <Step title="Check for Duplicates">
+    Case-insensitive duplicate detection prevents adding the same player twice.
+  </Step>
+  
+  <Step title="Add Custom Emote (Optional)">
+    Include an `emote` or `mote` field to assign a custom display icon.
+  </Step>
+  
+  <Step title="Trigger Auto-Refresh">
+    The ladder cache automatically refreshes after adding a player to fetch their data immediately.
+  </Step>
+</Steps>
+
+### Example Request
+
+```bash
+curl -X POST http://localhost:3001/api/friends \
+  -H "Content-Type: application/json" \
+  -d '{
+    "gameName": "Faker",
+    "tagLine": "KR1",
+    "emote": "⭐"
+  }'
+```
+
+## Removing Players
+
+### DELETE /api/friends/:gameName/:tagLine
+
+Remove a player from your tracking list:
+
+```javascript server/index.js (lines 1171-1198)
+app.delete("/api/friends/:gameName/:tagLine", async (req, res) => {
+  const { gameName, tagLine } = req.params;
+  let friends;
+  try {
+    friends = readFriends();
+  } catch {
+    return res.status(500).json({ error: "No se pudo leer friends.json" });
+  }
+  const before = friends.length;
+  friends = friends.filter(
+    (f) => !(f.gameName.toLowerCase() === gameName.toLowerCase() &&
+             f.tagLine.toLowerCase() === tagLine.toLowerCase())
+  );
+  if (friends.length === before) {
+    return res.status(404).json({ error: "Jugador no encontrado" });
+  }
+  fs.writeFileSync(FRIENDS_FILE, JSON.stringify(friends, null, 2));
+
+  try {
+    if (RIOT_API_KEY) {
+      await refreshLadderCache();
+    }
+  } catch (error) {
+    console.error("ERROR refreshing ladder cache after delete:", error.message);
+  }
+
+  res.json({ ok: true });
+});
+```
+
+### Example Request
+
+```bash
+curl -X DELETE http://localhost:3001/api/friends/Faker/KR1
+```
+
+<Warning>
+Deleting a player is permanent. Make sure you have the correct gameName and tagLine before executing.
+</Warning>
+
+## PUUID vs Riot ID Tracking
+
+The system uses a hybrid approach to handle player identity:
+
+### Why PUUIDs Matter
+
+**PUUIDs** (Player Universally Unique Identifiers) are permanent identifiers assigned by Riot. Unlike Riot IDs (gameName#tagLine), PUUIDs never change even when players change their name.
+
+<CardGroup cols={2}>
+  <Card title="Riot ID" icon="tag">
+    User-facing name. Can change at any time. Example: `Azpy#1337`
+  </Card>
+  <Card title="PUUID" icon="fingerprint">
+    Permanent identifier. Never changes. Example: `abc123def456...`
+  </Card>
+</CardGroup>
+
+### Automatic PUUID Resolution
+
+When you add a player by Riot ID, the system fetches their PUUID and stores it:
+
+```javascript server/index.js (lines 753-763)
+async function fetchPlayerData(gameName, tagLine) {
+  const account = await riotFetch(
+    `https://${REGION}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(gameName)}/${encodeURIComponent(tagLine)}`
+  );
+  if (account?.puuid) {
+    const raw = ladderCache.rawDataByPuuid[account.puuid] || (ladderCache.rawDataByPuuid[account.puuid] = {});
+    raw.account = { gameName: account.gameName, tagLine: account.tagLine, puuid: account.puuid };
+    raw.lastAccountAt = new Date().toISOString();
+  }
+  return fetchPlayerDataFromAccount(account, { gameName, tagLine });
+}
+```
+
+### Dual Lookup System
+
+The system can fetch player data using either identifier:
+
+```javascript server/index.js (lines 860-862)
+const value = friend?.puuid
+  ? await fetchPlayerDataByPuuid(friend.puuid)
+  : await fetchPlayerData(friend.gameName, friend.tagLine);
+```
+
+<Tip>
+If a PUUID is available, the system uses it for faster, more reliable lookups. This is especially useful after name changes.
+</Tip>
+
+## Auto-Updating Player Data
+
+The system automatically persists the latest Riot ID when refreshing:
+
+```javascript server/index.js (lines 974-987)
+const nextFriends = results.map((result, index) => {
+  const friend = friends[index] || {};
+  if (result.status !== "fulfilled") return friend;
+  const p = result.value;
+  const next = {
+    gameName: p.gameName,
+    tagLine: p.tagLine,
+    puuid: p.puuid,
+  };
+  const friendEmote = getFriendEmote(friend);
+  if (friendEmote) next.mote = friendEmote;
+  return next;
+});
+```
+
+### Name Change Handling
+
+When a player changes their name:
+
+<Steps>
+  <Step title="Detect Change">
+    The system fetches fresh account data using the PUUID.
+  </Step>
+  
+  <Step title="Update friends.json">
+    The new gameName and tagLine are written to the file automatically.
+  </Step>
+  
+  <Step title="Preserve Custom Data">
+    Custom emotes and other metadata are retained across name changes.
+  </Step>
+</Steps>
+
+```javascript server/index.js (lines 706-723)
+async function fetchAccountByPuuidWithCache(puuid) {
+  try {
+    const account = await riotFetch(
+      `https://${REGION}.api.riotgames.com/riot/account/v1/accounts/by-puuid/${encodeURIComponent(puuid)}`
+    );
+    const raw = ladderCache.rawDataByPuuid[puuid] || (ladderCache.rawDataByPuuid[puuid] = {});
+    raw.account = { gameName: account.gameName, tagLine: account.tagLine, puuid: account.puuid };
+    raw.lastAccountAt = new Date().toISOString();
+    return account;
+  } catch (err) {
+    const cached = ladderCache.rawDataByPuuid[puuid]?.account;
+    if (cached) {
+      console.log(`[CACHE] account fallback for ${puuid.slice(0, 8)}…`);
+      return cached;
+    }
+    throw err;
+  }
+}
+```
+
+<Note>
+If the Riot API is unavailable, the system falls back to cached account data to prevent disruption.
+</Note>
+
+## Custom Emotes
+
+Emotes are custom icons or labels that display alongside player names in the ladder.
+
+### Emote Field Handling
+
+The system supports both `emote` and `mote` field names for compatibility:
+
+```javascript server/index.js (lines 789-794)
+function getFriendEmote(friend) {
+  if (!friend || typeof friend !== "object") return null;
+  if (typeof friend.mote === "string" && friend.mote.trim()) return friend.mote.trim();
+  if (typeof friend.emote === "string" && friend.emote.trim()) return friend.emote.trim();
+  return null;
+}
+```
+
+### Emote Mapping
+
+Emotes are applied to players using both PUUID and Riot ID lookups:
+
+```javascript server/index.js (lines 801-816)
+function buildFriendEmoteMaps(friends) {
+  const byPuuid = new Map();
+  const byRiotId = new Map();
+
+  for (const friend of friends || []) {
+    const emote = getFriendEmote(friend);
+    if (!emote) continue;
+
+    if (friend?.puuid) byPuuid.set(friend.puuid, emote);
+
+    const friendRiotId = normalizeRiotId(friend?.gameName, friend?.tagLine);
+    if (friendRiotId) byRiotId.set(friendRiotId, emote);
+  }
+
+  return { byPuuid, byRiotId };
+}
+```
+
+### Applying Emotes to Players
+
+```javascript server/index.js (lines 818-835)
+function applyFriendEmotesToPlayers(players, friends) {
+  if (!Array.isArray(players) || players.length === 0) return players;
+  const { byPuuid, byRiotId } = buildFriendEmoteMaps(friends);
+
+  return players.map((player) => {
+    const existingEmote = getFriendEmote(player);
+    const byPuuidEmote = player?.puuid ? byPuuid.get(player.puuid) : null;
+
+    const playerRiotId = player?.riotId
+      ? String(player.riotId).trim().toLowerCase()
+      : normalizeRiotId(player?.gameName, player?.tagLine);
+    const byRiotIdEmote = playerRiotId ? byRiotId.get(playerRiotId) : null;
+
+    const resolvedEmote = existingEmote || byPuuidEmote || byRiotIdEmote || null;
+    if (resolvedEmote === player?.emote) return player;
+    return { ...player, emote: resolvedEmote };
+  });
+}
+```
+
+<Accordion title="Emote Priority Order">
+1. **Existing player emote** (highest priority)
+2. **PUUID-based emote** from friends.json
+3. **Riot ID-based emote** from friends.json
+4. **null** if no emote is found
+</Accordion>
+
+## Reading the Friends List
+
+### GET /api/friends
+
+Retrieve the current list of tracked players:
+
+```javascript server/index.js (lines 1122-1128)
+app.get("/api/friends", (req, res) => {
+  try {
+    const friends = readFriends();
+    res.json(friends);
+  } catch {
+    res.status(500).json({ error: "No se pudo leer friends.json" });
+  }
+});
+```
+
+### Example Response
+
+```json
+[
+  {
+    "gameName": "Azpy",
+    "tagLine": "1337",
+    "puuid": "abc123...",
+    "mote": "🎮"
+  },
+  {
+    "gameName": "Hachitas",
+    "tagLine": "norge",
+    "puuid": "def456..."
+  }
+]
+```
+
+## Cache Key Strategy
+
+The system uses flexible cache keys to handle both identifier types:
+
+```javascript server/index.js (lines 508-513)
+function getFriendCacheKey(friend) {
+  if (!friend || typeof friend !== "object") return null;
+  if (friend.puuid) return `puuid:${friend.puuid}`;
+  const riotId = normalizeRiotId(friend.gameName, friend.tagLine);
+  return riotId ? `riot:${riotId}` : null;
+}
+```
+
+### Multi-Key Indexing
+
+Each player can be indexed by multiple keys:
+
+```javascript server/index.js (lines 515-525)
+function buildFriendKeys(friend, resolvedPlayer) {
+  const keys = new Set();
+  const friendKey = getFriendCacheKey(friend);
+  if (friendKey) keys.add(friendKey);
+
+  if (resolvedPlayer?.puuid) keys.add(`puuid:${resolvedPlayer.puuid}`);
+  const resolvedRiotId = normalizeRiotId(resolvedPlayer?.gameName, resolvedPlayer?.tagLine);
+  if (resolvedRiotId) keys.add(`riot:${resolvedRiotId}`);
+
+  return Array.from(keys);
+}
+```
+
+<Tip>
+Multiple cache keys ensure that player data remains accessible even if their Riot ID changes or the PUUID is initially unknown.
+</Tip>
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Always Use Riot IDs" icon="circle-check">
+    When adding players manually, use their current Riot ID. The system will resolve the PUUID automatically.
+  </Card>
+  <Card title="Don't Worry About Name Changes" icon="arrows-rotate">
+    The PUUID-based tracking ensures players stay tracked even after renaming.
+  </Card>
+  <Card title="Use Emotes for Organization" icon="face-smile">
+    Custom emotes help identify players at a glance in large rosters.
+  </Card>
+  <Card title="Check GET /api/friends" icon="list">
+    Periodically review your friends list to ensure data accuracy.
+  </Card>
+</CardGroup>
+
+## Related Features
+
+<CardGroup cols={2}>
+  <Card title="Ladder Tracking" icon="chart-line" href="/features/ladder-tracking">
+    See how player data is used in rankings
+  </Card>
+  <Card title="Daily Activity" icon="calendar" href="/features/daily-activity">
+    Track LP changes over time
+  </Card>
+  <Card title="Rate Limiting" icon="shield" href="/features/rate-limiting">
+    Understand API call management
+  </Card>
+</CardGroup>

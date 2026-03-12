@@ -1,0 +1,239 @@
+---
+title: Get Player
+api: GET /api/player
+description: Fetches ranked data for a single player by Riot ID
+---
+
+This endpoint retrieves detailed ranked information for a specific player by their game name and tag line. Unlike `/api/ladder`, this endpoint always fetches fresh data from the Riot API (subject to rate limiting).
+
+## Request
+
+### Query Parameters
+
+<ParamField query="gameName" type="string" default="Azpy">
+  Player's game name (without the # tag)
+  
+  <Note>Defaults to "Azpy" if not provided</Note>
+</ParamField>
+
+<ParamField query="tagLine" type="string" default="1337">
+  Player's tag line (without the # symbol)
+  
+  <Note>Defaults to "1337" if not provided</Note>
+</ParamField>
+
+## Response
+
+Returns a single player object with complete ranked information.
+
+<ResponseField name="riotId" type="string" required>
+  Full Riot ID in format `GameName#TagLine`
+</ResponseField>
+
+<ResponseField name="gameName" type="string" required>
+  Player's game name
+</ResponseField>
+
+<ResponseField name="tagLine" type="string" required>
+  Player's tag line
+</ResponseField>
+
+<ResponseField name="puuid" type="string" required>
+  Player's persistent unique identifier
+</ResponseField>
+
+<ResponseField name="profileIconId" type="number" required>
+  Profile icon ID for Data Dragon image URLs
+</ResponseField>
+
+<ResponseField name="summonerLevel" type="number" required>
+  Current summoner level
+</ResponseField>
+
+<ResponseField name="soloq" type="object | null" required>
+  Ranked Solo/Duo queue information, null if unranked
+  
+  <Expandable title="soloq properties">
+    <ResponseField name="tier" type="string">
+      CHALLENGER, GRANDMASTER, MASTER, DIAMOND, EMERALD, PLATINUM, GOLD, SILVER, BRONZE, IRON
+    </ResponseField>
+    
+    <ResponseField name="rank" type="string">
+      I, II, III, or IV (not applicable for Master+)
+    </ResponseField>
+    
+    <ResponseField name="leaguePoints" type="number">
+      Current LP in the division
+    </ResponseField>
+    
+    <ResponseField name="wins" type="number">
+      Number of wins this season
+    </ResponseField>
+    
+    <ResponseField name="losses" type="number">
+      Number of losses this season
+    </ResponseField>
+    
+    <ResponseField name="queueType" type="string">
+      Always "RANKED_SOLO_5x5" for solo queue
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="flex" type="object | null" required>
+  Ranked Flex queue information (same structure as soloq), null if unranked
+  
+  <Info>queueType is "RANKED_FLEX_SR" for flex queue</Info>
+</ResponseField>
+
+<ResponseField name="topChampions" type="string[]" required>
+  Array of up to 3 most played champion names from recent 20 ranked matches
+  
+  <Note>Falls back to champion mastery data if no recent matches available</Note>
+</ResponseField>
+
+<ResponseField name="mainRole" type="string | null" required>
+  Most frequently played role from recent ranked matches
+  
+  Possible values: `TOP`, `JUNGLE`, `MIDDLE`, `BOTTOM`, `UTILITY`, or `null`
+</ResponseField>
+
+## Examples
+
+<CodeGroup>
+```bash cURL - Default
+curl "http://localhost:3001/api/player"
+```
+
+```bash cURL - Specific Player
+curl "http://localhost:3001/api/player?gameName=Faker&tagLine=KR1"
+```
+
+```javascript JavaScript
+const gameName = 'Faker';
+const tagLine = 'KR1';
+
+const response = await fetch(
+  `http://localhost:3001/api/player?gameName=${encodeURIComponent(gameName)}&tagLine=${encodeURIComponent(tagLine)}`
+);
+const player = await response.json();
+
+console.log(`${player.riotId}: ${player.soloq?.tier} ${player.soloq?.rank}`);
+```
+
+```python Python
+import requests
+
+params = {
+    'gameName': 'Faker',
+    'tagLine': 'KR1'
+}
+
+response = requests.get('http://localhost:3001/api/player', params=params)
+player = response.json()
+
+print(f"{player['riotId']}: {player['soloq']['tier']} {player['soloq']['rank']}")
+```
+</CodeGroup>
+
+## Response Examples
+
+<CodeGroup>
+```json Success - Ranked Player
+{
+  "riotId": "Faker#KR1",
+  "gameName": "Faker",
+  "tagLine": "KR1",
+  "puuid": "abc123def456...",
+  "profileIconId": 4568,
+  "summonerLevel": 432,
+  "soloq": {
+    "tier": "CHALLENGER",
+    "rank": "I",
+    "leaguePoints": 1247,
+    "wins": 234,
+    "losses": 198,
+    "queueType": "RANKED_SOLO_5x5"
+  },
+  "flex": {
+    "tier": "MASTER",
+    "rank": "I",
+    "leaguePoints": 87,
+    "wins": 45,
+    "losses": 32,
+    "queueType": "RANKED_FLEX_SR"
+  },
+  "topChampions": ["Azir", "Orianna", "LeBlanc"],
+  "mainRole": "MIDDLE"
+}
+```
+
+```json Success - Unranked Player
+{
+  "riotId": "NewPlayer#NA1",
+  "gameName": "NewPlayer",
+  "tagLine": "NA1",
+  "puuid": "xyz789abc123...",
+  "profileIconId": 1234,
+  "summonerLevel": 42,
+  "soloq": null,
+  "flex": null,
+  "topChampions": ["Garen", "Darius", "Teemo"],
+  "mainRole": "TOP"
+}
+```
+
+```json Error - No API Key
+{
+  "error": "Falta RIOT_API_KEY en server/.env"
+}
+```
+
+```json Error - Player Not Found
+{
+  "error": "Riot API 404: Data not found - summoner not found"
+}
+```
+
+```json Error - Rate Limited
+{
+  "error": "Riot API rate limit exceeded"
+}
+```
+</CodeGroup>
+
+## Behavior
+
+<Warning>
+**Live Data**: This endpoint always fetches fresh data from the Riot API and does NOT use cached data, making it subject to rate limiting.
+</Warning>
+
+<Info>
+**Champion Data**: The endpoint attempts to fetch recent match history to determine top champions and main role. If unavailable or rate limited, it falls back to champion mastery data.
+</Info>
+
+<Note>
+**Match Cache**: Recent match data (last 20 ranked games) is cached per PUUID with a TTL of 30 minutes (configurable via `MATCH_SYNC_TTL_MS`).
+</Note>
+
+## Error Codes
+
+| Status Code | Error Message | Description |
+|------------|---------------|-------------|
+| 500 | `Falta RIOT_API_KEY en server/.env` | Riot API key not configured |
+| 500 | `Riot API 404: ...` | Player not found |
+| 500 | `Riot API rate limit exceeded` | Rate limit hit, try again later |
+| 500 | `Riot API 503: ...` | Riot API service unavailable |
+
+## Use Cases
+
+- Look up any League of Legends player's current rank
+- Verify player data before adding to friends list
+- Build player lookup tools
+- Fetch fresh data for specific players on demand
+
+## Related Endpoints
+
+- [GET /api/ladder](/api/ladder) - Get all tracked friends (cached)
+- [POST /api/friends](/api/friends) - Add a player to the friends list
+- [GET /api/status](/api/status) - Check rate limit status

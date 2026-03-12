@@ -1,0 +1,178 @@
+---
+title: API Overview
+description: Introduction to the Tullidos SoloQ Ladder API
+---
+
+The Tullidos SoloQ Ladder API provides endpoints to track League of Legends ranked ladder data for a list of friends. This is a self-hosted application that aggregates Riot API data with caching and rate limiting.
+
+## Base URL
+
+By default, the API runs on:
+
+```
+http://localhost:3001
+```
+
+You can configure the port using the `PORT` environment variable in `server/.env`.
+
+## Authentication
+
+No authentication is required for API requests. This is a self-hosted application intended for personal use.
+
+<Note>
+The server requires a Riot API key configured in `server/.env` as `RIOT_API_KEY`. Without it, most endpoints will return a 500 error.
+</Note>
+
+## Response Format
+
+All endpoints return JSON responses with appropriate HTTP status codes:
+
+- `200 OK` - Successful request
+- `201 Created` - Resource successfully created
+- `400 Bad Request` - Missing or invalid parameters
+- `404 Not Found` - Resource not found
+- `409 Conflict` - Resource already exists
+- `500 Internal Server Error` - Server or Riot API error
+
+## Common Response Fields
+
+### Player Object
+
+Most endpoints return player objects with the following structure:
+
+<ResponseField name="riotId" type="string">
+  Full Riot ID in format `GameName#TagLine`
+</ResponseField>
+
+<ResponseField name="gameName" type="string">
+  Player's game name (without tag)
+</ResponseField>
+
+<ResponseField name="tagLine" type="string">
+  Player's tag line (without #)
+</ResponseField>
+
+<ResponseField name="puuid" type="string">
+  Player's persistent unique identifier
+</ResponseField>
+
+<ResponseField name="profileIconId" type="number">
+  Profile icon ID (for Data Dragon image URLs)
+</ResponseField>
+
+<ResponseField name="summonerLevel" type="number">
+  Current summoner level
+</ResponseField>
+
+<ResponseField name="soloq" type="object | null">
+  Ranked Solo/Duo queue information
+  
+  <Expandable title="soloq properties">
+    <ResponseField name="tier" type="string">
+      Tier: IRON, BRONZE, SILVER, GOLD, PLATINUM, EMERALD, DIAMOND, MASTER, GRANDMASTER, CHALLENGER
+    </ResponseField>
+    
+    <ResponseField name="rank" type="string">
+      Division: I, II, III, IV (not applicable for Master+)
+    </ResponseField>
+    
+    <ResponseField name="leaguePoints" type="number">
+      Current LP in the division
+    </ResponseField>
+    
+    <ResponseField name="wins" type="number">
+      Number of wins this season
+    </ResponseField>
+    
+    <ResponseField name="losses" type="number">
+      Number of losses this season
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="flex" type="object | null">
+  Ranked Flex queue information (same structure as soloq)
+</ResponseField>
+
+<ResponseField name="topChampions" type="string[]">
+  Array of up to 3 most played champion names from recent ranked matches
+</ResponseField>
+
+<ResponseField name="mainRole" type="string | null">
+  Most played role from recent ranked matches (TOP, JUNGLE, MIDDLE, BOTTOM, UTILITY)
+</ResponseField>
+
+<ResponseField name="emote" type="string | null">
+  Custom emoji/emote associated with this friend
+</ResponseField>
+
+<ResponseField name="error" type="string | null">
+  Error message if player data couldn't be fetched
+</ResponseField>
+
+## Caching & Rate Limiting
+
+The API implements aggressive caching to respect Riot API rate limits:
+
+<Info>
+**Cache TTL**: Configurable via `LADDER_CACHE_TTL_MS` (default: 60 seconds)
+
+The API refreshes a subset of players on each interval rather than all at once.
+</Info>
+
+<Warning>
+**Rate Limits**: The API budgets to 18 requests/second and 90 requests/2 minutes to stay within Riot's personal API key limits.
+
+When rate limited, the API returns cached data and marks responses as `stale: true`.
+</Warning>
+
+## Error Handling
+
+Errors return JSON with an `error` field:
+
+```json
+{
+  "error": "Falta RIOT_API_KEY en server/.env"
+}
+```
+
+Common error messages:
+
+- `"Falta RIOT_API_KEY en server/.env"` - Riot API key not configured
+- `"No se pudo leer friends.json"` - Friends file not found or invalid
+- `"Riot API rate limit exceeded"` - Rate limit hit, cached data will be used
+- `"gameName y tagLine son obligatorios"` - Missing required parameters
+
+## Data Dragon Version
+
+The API fetches the latest Data Dragon version on startup for champion and icon assets. The current version is included in the `/api/ladder` response as `ddragonVersion`.
+
+Example Data Dragon URLs:
+
+```bash
+# Profile icons
+https://ddragon.leagueoflegends.com/cdn/{version}/img/profileicon/{iconId}.png
+
+# Champion images
+https://ddragon.leagueoflegends.com/cdn/{version}/img/champion/{championName}.png
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Ladder" icon="trophy" href="/api/ladder">
+    Get the full ranked ladder
+  </Card>
+  
+  <Card title="Player" icon="user" href="/api/player">
+    Look up individual players
+  </Card>
+  
+  <Card title="Friends" icon="users" href="/api/friends">
+    Manage your friends list
+  </Card>
+  
+  <Card title="Status" icon="chart-line" href="/api/status">
+    Monitor API status and daily stats
+  </Card>
+</CardGroup>

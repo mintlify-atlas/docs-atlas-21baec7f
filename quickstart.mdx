@@ -1,80 +1,222 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: 'Quickstart'
+description: 'Get your Tullidos SoloQ Ladder running in under 5 minutes'
 ---
 
-## Get started in three steps
+Get your custom League of Legends ladder up and running in minutes. This guide will walk you through installation, configuration, and launching your ladder tracker.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+Before you begin, ensure you have:
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+- **Node.js 20+** and **npm 10+** installed
+- A **Riot Games API key** (get one at [Riot Developer Portal](https://developer.riotgames.com/))
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  The Riot API personal development key has rate limits of 20 requests/second and 100 requests/2 minutes.
 </Note>
+
+## Installation
+
+<Steps>
+  <Step title="Clone the Repository">
+    First, clone the repository to your local machine:
+    
+    ```bash
+    git clone <your-repo-url>
+    cd tullidos-soloq-ladder
+    ```
+  </Step>
+
+  <Step title="Install Dependencies">
+    Install dependencies for both the server and client:
+
+    <CodeGroup>
+    ```bash npm
+    # Install server dependencies
+    cd server
+    npm install
+
+    # Install client dependencies
+    cd ../client
+    npm install
+    ```
+
+    ```bash yarn
+    # Install server dependencies
+    cd server
+    yarn install
+
+    # Install client dependencies
+    cd ../client
+    yarn install
+    ```
+
+    ```bash pnpm
+    # Install server dependencies
+    cd server
+    pnpm install
+
+    # Install client dependencies
+    cd ../client
+    pnpm install
+    ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Configure Environment Variables">
+    Create your environment configuration file:
+
+    ```bash
+    cd server
+    cp .env.example .env
+    ```
+
+    Open `server/.env` and add your Riot API key:
+
+    ```bash server/.env
+    PORT=3001
+    RIOT_API_KEY=RGAPI-your-api-key-here
+    LADDER_CACHE_TTL_MS=60000
+    MATCH_SYNC_TTL_MS=1800000
+    RATE_LIMIT_FALLBACK_MS=60000
+    FRIENDS_PER_REFRESH=2
+    ```
+
+    <Warning>
+      Never commit your `.env` file to version control. Keep your API key secret!
+    </Warning>
+
+    ### Configuration Options
+
+    - `PORT` - Server port (default: 3001)
+    - `RIOT_API_KEY` - **Required** - Your Riot Games API key
+    - `LADDER_CACHE_TTL_MS` - Cache refresh interval in milliseconds (default: 60000 = 1 minute)
+    - `MATCH_SYNC_TTL_MS` - Match history sync interval (default: 1800000 = 30 minutes)
+    - `RATE_LIMIT_FALLBACK_MS` - Fallback delay when rate limited (default: 60000)
+    - `FRIENDS_PER_REFRESH` - Number of players to refresh per cycle (default: 2)
+  </Step>
+
+  <Step title="Add Players to Track">
+    Edit `server/friends.json` to add the players you want to track:
+
+    ```json server/friends.json
+    [
+      {
+        "gameName": "Azpy",
+        "tagLine": "1337",
+        "mote": "Azpy"
+      },
+      {
+        "gameName": "NEWJEANS HANNI",
+        "tagLine": "1975"
+      }
+    ]
+    ```
+
+    <Info>
+      - `gameName` and `tagLine` are required for each player
+      - `mote` is an optional custom nickname/emoji to display
+      - `puuid` will be automatically populated after the first refresh
+    </Info>
+  </Step>
+
+  <Step title="Start the Application">
+    Launch both the server and client in separate terminal windows:
+
+    **Terminal 1 - Start the server:**
+
+    <CodeGroup>
+    ```bash npm
+    cd server
+    npm run start
+    ```
+
+    ```bash yarn
+    cd server
+    yarn start
+    ```
+
+    ```bash pnpm
+    cd server
+    pnpm start
+    ```
+    </CodeGroup>
+
+    **Terminal 2 - Start the client:**
+
+    <CodeGroup>
+    ```bash npm
+    cd client
+    npm run dev
+    ```
+
+    ```bash yarn
+    cd client
+    yarn dev
+    ```
+
+    ```bash pnpm
+    cd client
+    pnpm dev
+    ```
+    </CodeGroup>
+
+    <Tip>
+      For development with auto-reload, use `npm run dev` instead of `npm run start` in the server directory.
+    </Tip>
+  </Step>
+
+  <Step title="Access Your Ladder">
+    Open your browser and navigate to:
+
+    - **Frontend (Ladder UI):** [http://localhost:5173](http://localhost:5173)
+    - **Backend API:** [http://localhost:3001](http://localhost:3001)
+
+    Your ladder will automatically start fetching player data from the Riot API!
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Explore the available API endpoints
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/configuration/environment">
+    Learn about environment variables and configuration
+  </Card>
+  <Card title="Features" icon="star" href="/features/ladder-tracking">
+    Explore ladder tracking features
+  </Card>
+  <Card title="Deployment" icon="rocket" href="/configuration/deployment">
+    Deploy your ladder to production
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+### API Key Issues
+
+If you see errors about missing `RIOT_API_KEY`:
+
+1. Verify the key is correctly set in `server/.env`
+2. Make sure there are no extra spaces or quotes around the key
+3. Restart the server after updating the `.env` file
+
+### Rate Limit Errors
+
+The application automatically handles Riot API rate limits, but if you're hitting limits frequently:
+
+- Increase `LADDER_CACHE_TTL_MS` to reduce refresh frequency
+- Reduce `FRIENDS_PER_REFRESH` to update fewer players per cycle
+- Check `/api/status` endpoint to monitor your API usage
+
+### Empty Ladder
+
+If your ladder appears empty:
+
+1. Check that `server/friends.json` contains valid player names and tags
+2. Verify your API key has the correct permissions
+3. Check the server console for error messages
+4. Visit `http://localhost:3001/api/status` to see the refresh status

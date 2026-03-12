@@ -1,0 +1,502 @@
+---
+title: Rate Limiting
+description: Advanced rate limit handling with proactive throttling, reactive 429 handling, and intelligent caching
+icon: shield-halved
+---
+
+The Tullidos SoloQ Ladder implements a **dual-layer rate limiting system** that prevents API abuse through proactive sliding-window throttling and reactive 429 handling, combined with per-endpoint caching for maximum resilience.
+
+## Riot API Rate Limits
+
+Riot personal API keys have strict hard limits:
+
+```javascript server/index.js (lines 27-32)
+// Riot personal key hard limits: 20 req/1 s, 100 req/2 min.
+// We budget to 18/1 s and 90/2 min for a safety margin.
+const RATE_WINDOW_LIMITS = [
+  { count: 18, windowMs: 1_000 },
+  { count: 90, windowMs: 120_000 },
+];
+```
+
+<Warning>
+The system uses **conservative budgets** (18 req/1s and 90 req/2min) instead of the full limits (20 req/1s, 100 req/2min) to provide a safety buffer.
+</Warning>
+
+### Rate Limit Windows
+
+<CardGroup cols={2}>
+  <Card title="Short Burst" icon="gauge-high">
+    **18 requests** per 1 second
+    
+    Prevents rapid-fire API calls during intensive operations.
+  </Card>
+  <Card title="Sustained Load" icon="gauge">
+    **90 requests** per 2 minutes
+    
+    Limits overall throughput to prevent daily quota exhaustion.
+  </Card>
+</CardGroup>
+
+## Proactive Sliding-Window Throttling
+
+The system tracks **every request timestamp** and enforces both rate limits proactively using a sliding-window algorithm.
+
+### Request Timestamp Tracking
+
+```javascript server/index.js (lines 33-37)
+const requestTimestamps = []; // sorted epoch-ms of every dispatched Riot request
+let totalRiotRequests = 0;
+let todayRiotRequests = 0;
+let riotRateLimitedUntil = 0; // set reactively when a 429 is received
+let lastApiStatsPersistAt = 0;
+```
+
+### Sliding-Window Algorithm
+
+Before each API call, the system calculates the minimum wait time needed to stay within both budgets:
+
+```javascript server/index.js (lines 571-600)
+async function waitForRateLimit() {
+  // Prune timestamps older than the widest window (2 min).
+  const horizon = Date.now() - 120_000;
+  while (requestTimestamps.length > 0 && requestTimestamps[0] < horizon) requestTimestamps.shift();
+
+  let waitUntil = Date.now();
+  for (const { count, windowMs } of RATE_WINDOW_LIMITS) {
+    if (requestTimestamps.length >= count) {
+      // The oldest timestamp that would still be inside the window after this call.
+      const blockingTs = requestTimestamps[requestTimestamps.length - count];
+      const unlockAt = blockingTs + windowMs + 60; // +60 ms safety buffer
+      if (unlockAt > waitUntil) waitUntil = unlockAt;
+    }
+  }
+
+  const delay = waitUntil - Date.now();
+  if (delay > 0) {
+    console.log(
+      `[RATE] Throttling ${delay} ms — window: ${requestTimestamps.length} req in last 2 min`
+    );
+    await new Promise((r) => setTimeout(r, delay));
+  }
+
+  requestTimestamps.push(Date.now());
+  totalRiotRequests += 1;
+  todayRiotRequests += 1;
+  saveApiStatsToFile(false);
+}
+```
+
+<Steps>
+  <Step title="Prune Old Timestamps">
+    Remove timestamps older than 2 minutes to keep the tracking array lean.
+  </Step>
+  
+  <Step title="Check Both Windows">
+    For each rate limit (1s and 2min), check if we're at the budget cap.
+  </Step>
+  
+  <Step title="Calculate Wait Time">
+    If at capacity, calculate when the oldest request in the window will expire.
+  </Step>
+  
+  <Step title="Throttle if Needed">
+    If a wait is required, sleep for the calculated duration with a 60ms safety buffer.
+  </Step>
+  
+  <Step title="Record Timestamp">
+    Add the current timestamp to the tracking array and increment request counters.
+  </Step>
+</Steps>
+
+<Info>
+The **60ms safety buffer** (`unlockAt = blockingTs + windowMs + 60`) accounts for network latency and clock drift.
+</Info>
+
+## Reactive 429 Handling
+
+If a rate limit is hit despite proactive throttling (e.g., due to concurrent processes or API changes), the system enters a **hard block** state:
+
+```javascript server/index.js (lines 602-641)
+async function riotFetch(baseUrl) {
+  // Reactive: hard block when a 429 was received.
+  if (Date.now() < riotRateLimitedUntil) {
+    const waitSeconds = Math.ceil((riotRateLimitedUntil - Date.now()) / 1000);
+    const err = new Error(`Rate limit activo, reintentando en ${waitSeconds}s`);
+    err.code = "RATE_LIMITED";
+    throw err;
+  }
+
+  // Proactive: sliding-window throttle — never exceeds 18/1 s or 90/2 min.
+  await waitForRateLimit();
+
+  const response = await fetch(baseUrl, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      "X-Riot-Token": RIOT_API_KEY,
+    },
+  });
+  const text = await response.text();
+
+  if (response.status === 429) {
+    const retryAfterHeader = response.headers.get("retry-after");
+    const retryAfterSeconds = Number(retryAfterHeader);
+    const retryMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+      ? retryAfterSeconds * 1000
+      : RATE_LIMIT_FALLBACK_MS;
+    riotRateLimitedUntil = Date.now() + retryMs;
+
+    const err = new Error("Riot API rate limit exceeded");
+    err.code = "RATE_LIMITED";
+    err.retryAfterMs = retryMs;
+    throw err;
+  }
+
+  if (!response.ok) {
+    throw new Error(`Riot API ${response.status}: ${text || response.statusText}`);
+  }
+  return text ? JSON.parse(text) : null;
+}
+```
+
+### 429 Response Handling
+
+When a `429 Too Many Requests` response is received:
+
+<Steps>
+  <Step title="Parse Retry-After Header">
+    Extract the `Retry-After` header value to determine the required wait time.
+  </Step>
+  
+  <Step title="Set Global Block">
+    Update `riotRateLimitedUntil` to block all API calls until the retry time expires.
+  </Step>
+  
+  <Step title="Throw Typed Error">
+    Return an error with `code: "RATE_LIMITED"` so calling code can detect and handle the rate limit state.
+  </Step>
+</Steps>
+
+<Note>
+If the `Retry-After` header is missing or invalid, the system falls back to a configurable wait time:
+
+```javascript server/index.js (line 24)
+const RATE_LIMIT_FALLBACK_MS = Number(process.env.RATE_LIMIT_FALLBACK_MS) || 60 * 1000;
+```
+
+Default: **60 seconds**.
+</Note>
+
+## Per-Endpoint Caching
+
+To minimize API calls and provide resilience during rate limits, the system caches the raw API response for each endpoint:
+
+### Cached Fetch Functions
+
+<Accordion title="fetchSummonerWithCache">
+```javascript server/index.js (lines 668-685)
+async function fetchSummonerWithCache(puuid) {
+  try {
+    const summoner = await riotFetch(
+      `https://${PLATFORM}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/${encodeURIComponent(puuid)}`
+    );
+    const raw = ladderCache.rawDataByPuuid[puuid] || (ladderCache.rawDataByPuuid[puuid] = {});
+    raw.summoner = { profileIconId: summoner.profileIconId, summonerLevel: summoner.summonerLevel };
+    raw.lastSummonerAt = new Date().toISOString();
+    return summoner;
+  } catch (err) {
+    const cached = ladderCache.rawDataByPuuid[puuid]?.summoner;
+    if (cached) {
+      console.log(`[CACHE] summoner fallback for ${puuid.slice(0, 8)}…`);
+      return cached;
+    }
+    throw err;
+  }
+}
+```
+</Accordion>
+
+<Accordion title="fetchLeagueEntriesWithCache">
+```javascript server/index.js (lines 687-704)
+async function fetchLeagueEntriesWithCache(puuid) {
+  try {
+    const entries = await riotFetch(
+      `https://${PLATFORM}.api.riotgames.com/lol/league/v4/entries/by-puuid/${encodeURIComponent(puuid)}`
+    );
+    const raw = ladderCache.rawDataByPuuid[puuid] || (ladderCache.rawDataByPuuid[puuid] = {});
+    raw.leagueEntries = entries;
+    raw.lastLeagueAt = new Date().toISOString();
+    return entries;
+  } catch (err) {
+    const cached = ladderCache.rawDataByPuuid[puuid]?.leagueEntries;
+    if (cached) {
+      console.log(`[CACHE] league entries fallback for ${puuid.slice(0, 8)}…`);
+      return cached;
+    }
+    throw err;
+  }
+}
+```
+</Accordion>
+
+<Accordion title="fetchAccountByPuuidWithCache">
+```javascript server/index.js (lines 706-723)
+async function fetchAccountByPuuidWithCache(puuid) {
+  try {
+    const account = await riotFetch(
+      `https://${REGION}.api.riotgames.com/riot/account/v1/accounts/by-puuid/${encodeURIComponent(puuid)}`
+    );
+    const raw = ladderCache.rawDataByPuuid[puuid] || (ladderCache.rawDataByPuuid[puuid] = {});
+    raw.account = { gameName: account.gameName, tagLine: account.tagLine, puuid: account.puuid };
+    raw.lastAccountAt = new Date().toISOString();
+    return account;
+  } catch (err) {
+    const cached = ladderCache.rawDataByPuuid[puuid]?.account;
+    if (cached) {
+      console.log(`[CACHE] account fallback for ${puuid.slice(0, 8)}…`);
+      return cached;
+    }
+    throw err;
+  }
+}
+```
+</Accordion>
+
+### Cache Persistence Structure
+
+Raw API data is stored in `ladderCache.rawDataByPuuid`:
+
+```javascript
+{
+  "[puuid]": {
+    "summoner": { "profileIconId": 123, "summonerLevel": 456 },
+    "lastSummonerAt": "2026-03-12T14:30:00.000Z",
+    "leagueEntries": [ /* rank data */ ],
+    "lastLeagueAt": "2026-03-12T14:30:00.000Z",
+    "account": { "gameName": "Azpy", "tagLine": "1337", "puuid": "..." },
+    "lastAccountAt": "2026-03-12T14:30:00.000Z"
+  }
+}
+```
+
+<Tip>
+Each endpoint's cache is timestamped independently, allowing fine-grained cache invalidation in future updates.
+</Tip>
+
+## API Request Statistics
+
+The system tracks and persists API usage statistics to `api-stats.json`:
+
+```javascript server/index.js (lines 46-97)
+function loadApiStatsFromFile() {
+  try {
+    if (!fs.existsSync(API_STATS_FILE)) return;
+    const parsed = JSON.parse(fs.readFileSync(API_STATS_FILE, "utf8"));
+    const persistedTotal = Number(parsed?.totalRiotRequests);
+    if (Number.isFinite(persistedTotal) && persistedTotal >= 0) {
+      totalRiotRequests = persistedTotal;
+    }
+
+    const todayKey = getDateKey();
+    const perDay = parsed?.perDay || {};
+    const persistedToday = Number(perDay[todayKey]);
+    if (Number.isFinite(persistedToday) && persistedToday >= 0) {
+      todayRiotRequests = persistedToday;
+    }
+  } catch (err) {
+    console.warn("Could not load API stats from file:", err.message);
+  }
+}
+
+function saveApiStatsToFile(force = false) {
+  const now = Date.now();
+  if (!force && now - lastApiStatsPersistAt < 5000) return;
+  try {
+    let parsed = {};
+    if (fs.existsSync(API_STATS_FILE)) {
+      try {
+        parsed = JSON.parse(fs.readFileSync(API_STATS_FILE, "utf8"));
+      } catch {
+        parsed = {};
+      }
+    }
+
+    const todayKey = getDateKey();
+    const nextPerDay = { ...(parsed.perDay || {}), [todayKey]: todayRiotRequests };
+    const keepDays = Object.keys(nextPerDay).sort().slice(-31);
+    const compactPerDay = {};
+    for (const day of keepDays) compactPerDay[day] = Number(nextPerDay[day]) || 0;
+
+    fs.writeFileSync(
+      API_STATS_FILE,
+      JSON.stringify({
+        totalRiotRequests,
+        perDay: compactPerDay,
+        updatedAt: new Date().toISOString(),
+      }, null, 2)
+    );
+    lastApiStatsPersistAt = now;
+  } catch (err) {
+    console.warn("Could not save API stats to file:", err.message);
+  }
+}
+```
+
+### api-stats.json Structure
+
+```json
+{
+  "totalRiotRequests": 12847,
+  "perDay": {
+    "2026-03-01": 420,
+    "2026-03-02": 398,
+    "2026-03-12": 156
+  },
+  "updatedAt": "2026-03-12T14:30:00.000Z"
+}
+```
+
+<Info>
+Stats are saved to disk **every 5 seconds** to prevent data loss during unexpected shutdowns. The system keeps the last **31 days** of per-day statistics.
+</Info>
+
+### Graceful Shutdown Handling
+
+```javascript server/index.js (lines 1290-1302)
+process.on("SIGINT", () => {
+  saveApiStatsToFile(true);
+  process.exit(0);
+});
+
+process.on("SIGTERM", () => {
+  saveApiStatsToFile(true);
+  process.exit(0);
+});
+
+process.on("exit", () => {
+  saveApiStatsToFile(true);
+});
+```
+
+## Status Monitoring
+
+### GET /api/status
+
+Returns real-time rate limit and usage statistics:
+
+```javascript server/index.js (lines 1200-1238)
+app.get("/api/status", (req, res) => {
+  // ...
+  const now = Date.now();
+  const rateLimitSecondsLeft = riotRateLimitedUntil > now
+    ? Math.ceil((riotRateLimitedUntil - now) / 1000) : 0;
+  const horizon1s = now - 1_000;
+  const horizon2min = now - 120_000;
+  const req1s = requestTimestamps.filter(t => t > horizon1s).length;
+  const req2min = requestTimestamps.filter(t => t > horizon2min).length;
+  res.json({
+    ok: true,
+    riotRateLimited: riotRateLimitedUntil > now,
+    riotRateLimitedUntil,
+    rateLimitSecondsLeft,
+    recentRequests1s: req1s,
+    recentRequests2min: req2min,
+    totalRequests: totalRiotRequests,
+    todayRequests: todayRiotRequests,
+    budgetRemaining1s: Math.max(0, 18 - req1s),
+    budgetRemaining2min: Math.max(0, 90 - req2min),
+    refreshCursor: ladderCache.refreshCursor,
+    playersCached: Object.keys(ladderCache.playerSnapshotByKey).length,
+    rawDataCached: Object.keys(ladderCache.rawDataByPuuid).length,
+    dailyHighlights: buildDailyHighlights(),
+    isRefreshing: Boolean(ladderCache.refreshPromise),
+    lastUpdatedAt: ladderCache.lastUpdatedAt,
+    lastError: ladderCache.lastError,
+    timestamp: new Date().toISOString(),
+  });
+});
+```
+
+### Example Response
+
+```json
+{
+  "ok": true,
+  "riotRateLimited": false,
+  "riotRateLimitedUntil": 0,
+  "rateLimitSecondsLeft": 0,
+  "recentRequests1s": 3,
+  "recentRequests2min": 42,
+  "totalRequests": 12847,
+  "todayRequests": 156,
+  "budgetRemaining1s": 15,
+  "budgetRemaining2min": 48,
+  "refreshCursor": 8,
+  "playersCached": 24,
+  "rawDataCached": 24,
+  "isRefreshing": false,
+  "lastUpdatedAt": "2026-03-12T14:30:00.000Z",
+  "lastError": null,
+  "timestamp": "2026-03-12T14:35:00.000Z"
+}
+```
+
+<CardGroup cols={3}>
+  <Card title="Budget Remaining" icon="battery-three-quarters">
+    Real-time remaining capacity in both rate limit windows.
+  </Card>
+  <Card title="Recent Requests" icon="clock">
+    Number of requests made in the last 1s and 2min.
+  </Card>
+  <Card title="Total & Daily Stats" icon="chart-simple">
+    Cumulative and daily request counters for usage analysis.
+  </Card>
+</CardGroup>
+
+## Environment Variables
+
+```bash .env
+LADDER_CACHE_TTL_MS=60000           # Cache lifetime (default: 60 seconds)
+RATE_LIMIT_FALLBACK_MS=60000        # Fallback wait on 429 without Retry-After
+FRIENDS_PER_REFRESH=2               # Players to refresh per cycle
+MATCH_SYNC_TTL_MS=1800000           # Match cache lifetime (30 minutes)
+```
+
+<Warning>
+Increasing `FRIENDS_PER_REFRESH` reduces the time to fully refresh the ladder but increases burst API usage. Monitor your rate limit budgets carefully.
+</Warning>
+
+## Best Practices
+
+<Steps>
+  <Step title="Trust the Proactive Throttler">
+    The sliding-window algorithm is designed to prevent 429s. Avoid manual rate limit workarounds.
+  </Step>
+  
+  <Step title="Monitor /api/status">
+    Regularly check budget remaining to ensure you're not approaching limits.
+  </Step>
+  
+  <Step title="Use Partial Refresh">
+    The rotating cursor strategy distributes API calls evenly. Avoid force-refresh unless necessary.
+  </Step>
+  
+  <Step title="Leverage Cache Fallbacks">
+    During rate limits, the system serves cached data automatically. Your ladder stays functional.
+  </Step>
+</Steps>
+
+## Related Features
+
+<CardGroup cols={2}>
+  <Card title="Ladder Tracking" icon="chart-line" href="/features/ladder-tracking">
+    See how caching improves ladder performance
+  </Card>
+  <Card title="Player Management" icon="users" href="/features/player-management">
+    Understand per-player caching strategies
+  </Card>
+  <Card title="Daily Activity" icon="calendar" href="/features/daily-activity">
+    Learn how refresh frequency affects daily tracking
+  </Card>
+</CardGroup>

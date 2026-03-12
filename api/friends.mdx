@@ -1,0 +1,340 @@
+---
+title: Friends Management
+description: Manage your friends list - the players tracked in the ladder
+---
+
+The friends endpoints allow you to manage the list of players tracked by the ladder. The friends list is stored in `server/friends.json` and determines which players appear in the `/api/ladder` response.
+
+## Get Friends
+
+<api>GET /api/friends</api>
+
+Retrieve the complete list of tracked friends.
+
+### Request
+
+<CodeGroup>
+```bash cURL
+curl http://localhost:3001/api/friends
+```
+
+```javascript JavaScript
+const response = await fetch('http://localhost:3001/api/friends');
+const friends = await response.json();
+```
+</CodeGroup>
+
+### Response
+
+Returns an array of friend objects.
+
+<ResponseField name="friends" type="array" required>
+  Array of friend objects
+  
+  <Expandable title="Friend object properties">
+    <ResponseField name="gameName" type="string">
+      Player's game name
+    </ResponseField>
+    
+    <ResponseField name="tagLine" type="string">
+      Player's tag line
+    </ResponseField>
+    
+    <ResponseField name="puuid" type="string">
+      Player's PUUID (automatically populated after first fetch)
+    </ResponseField>
+    
+    <ResponseField name="mote" type="string">
+      Custom emoji/emote for this friend (optional)
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Response Example
+
+<CodeGroup>
+```json Success
+[
+  {
+    "gameName": "Faker",
+    "tagLine": "KR1",
+    "puuid": "abc123def456...",
+    "mote": "🐐"
+  },
+  {
+    "gameName": "Azpy",
+    "tagLine": "1337",
+    "puuid": "xyz789abc123..."
+  },
+  {
+    "gameName": "NewFriend",
+    "tagLine": "EUW"
+  }
+]
+```
+
+```json Error
+{
+  "error": "No se pudo leer friends.json"
+}
+```
+</CodeGroup>
+
+---
+
+## Add Friend
+
+<api>POST /api/friends</api>
+
+Add a new player to the friends list. This triggers an immediate ladder refresh to fetch their data.
+
+### Request
+
+#### Body Parameters
+
+<ParamField body="gameName" type="string" required>
+  Player's game name (without the # tag)
+</ParamField>
+
+<ParamField body="tagLine" type="string" required>
+  Player's tag line (without the # symbol)
+</ParamField>
+
+<ParamField body="emote" type="string">
+  Custom emoji/emote to display for this friend
+  
+  <Info>You can also use `mote` as an alias for this field</Info>
+</ParamField>
+
+<ParamField body="mote" type="string">
+  Alternative field name for custom emoji (same as `emote`)
+</ParamField>
+
+### Request Examples
+
+<CodeGroup>
+```bash cURL - Basic
+curl -X POST http://localhost:3001/api/friends \
+  -H "Content-Type: application/json" \
+  -d '{
+    "gameName": "Faker",
+    "tagLine": "KR1"
+  }'
+```
+
+```bash cURL - With Emote
+curl -X POST http://localhost:3001/api/friends \
+  -H "Content-Type: application/json" \
+  -d '{
+    "gameName": "Faker",
+    "tagLine": "KR1",
+    "emote": "🐐"
+  }'
+```
+
+```javascript JavaScript
+const response = await fetch('http://localhost:3001/api/friends', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    gameName: 'Faker',
+    tagLine: 'KR1',
+    emote: '🐐'
+  })
+});
+
+const result = await response.json();
+```
+
+```python Python
+import requests
+
+data = {
+    'gameName': 'Faker',
+    'tagLine': 'KR1',
+    'emote': '🐐'
+}
+
+response = requests.post(
+    'http://localhost:3001/api/friends',
+    json=data
+)
+
+result = response.json()
+```
+</CodeGroup>
+
+### Response
+
+<ResponseField name="ok" type="boolean" required>
+  True if friend was successfully added
+</ResponseField>
+
+### Response Examples
+
+<CodeGroup>
+```json Success (201 Created)
+{
+  "ok": true
+}
+```
+
+```json Error - Missing Parameters (400)
+{
+  "error": "gameName y tagLine son obligatorios"
+}
+```
+
+```json Error - Already Exists (409)
+{
+  "error": "Ese jugador ya está en la lista"
+}
+```
+</CodeGroup>
+
+### Behavior
+
+<Info>
+**Case Insensitive**: The endpoint checks for existing friends using case-insensitive comparison of gameName and tagLine.
+</Info>
+
+<Note>
+**Auto Refresh**: Adding a friend automatically triggers a ladder cache refresh to fetch their data immediately (if `RIOT_API_KEY` is configured).
+</Note>
+
+<Warning>
+**PUUID Persistence**: After the first successful fetch, the player's PUUID is automatically added to `friends.json`. This ensures the ladder continues tracking the player even if they change their Riot ID.
+</Warning>
+
+---
+
+## Delete Friend
+
+<api>DELETE /api/friends/:gameName/:tagLine</api>
+
+Remove a player from the friends list. This triggers an immediate ladder refresh.
+
+### Path Parameters
+
+<ParamField path="gameName" type="string" required>
+  Player's game name (URL encoded if it contains special characters)
+</ParamField>
+
+<ParamField path="tagLine" type="string" required>
+  Player's tag line
+</ParamField>
+
+### Request Examples
+
+<CodeGroup>
+```bash cURL
+curl -X DELETE http://localhost:3001/api/friends/Faker/KR1
+```
+
+```bash cURL - URL Encoded
+curl -X DELETE "http://localhost:3001/api/friends/Player%20Name/EUW"
+```
+
+```javascript JavaScript
+const gameName = 'Faker';
+const tagLine = 'KR1';
+
+const response = await fetch(
+  `http://localhost:3001/api/friends/${encodeURIComponent(gameName)}/${encodeURIComponent(tagLine)}`,
+  { method: 'DELETE' }
+);
+
+const result = await response.json();
+```
+
+```python Python
+import requests
+from urllib.parse import quote
+
+game_name = 'Faker'
+tag_line = 'KR1'
+
+response = requests.delete(
+    f'http://localhost:3001/api/friends/{quote(game_name)}/{quote(tag_line)}'
+)
+
+result = response.json()
+```
+</CodeGroup>
+
+### Response
+
+<ResponseField name="ok" type="boolean" required>
+  True if friend was successfully removed
+</ResponseField>
+
+### Response Examples
+
+<CodeGroup>
+```json Success (200)
+{
+  "ok": true
+}
+```
+
+```json Error - Not Found (404)
+{
+  "error": "Jugador no encontrado"
+}
+```
+
+```json Error - File Error (500)
+{
+  "error": "No se pudo leer friends.json"
+}
+```
+</CodeGroup>
+
+### Behavior
+
+<Info>
+**Case Insensitive**: The deletion is case-insensitive, so deleting "faker/kr1" will remove "Faker/KR1".
+</Info>
+
+<Note>
+**Auto Refresh**: Removing a friend automatically triggers a ladder cache refresh (if `RIOT_API_KEY` is configured).
+</Note>
+
+---
+
+## Friends File Format
+
+The `server/friends.json` file stores the friends list in this format:
+
+```json
+[
+  {
+    "gameName": "Faker",
+    "tagLine": "KR1",
+    "puuid": "abc123def456...",
+    "mote": "🐐"
+  },
+  {
+    "gameName": "Azpy",
+    "tagLine": "1337",
+    "puuid": "xyz789abc123..."
+  }
+]
+```
+
+<Warning>
+**Manual Edits**: You can manually edit `friends.json`, but ensure it remains valid JSON. The server will read changes on the next refresh cycle.
+</Warning>
+
+## Use Cases
+
+- Build a UI for managing tracked players
+- Import friends lists from external sources
+- Automatically add/remove friends based on criteria
+- Assign custom emojis to make the ladder more fun
+
+## Related Endpoints
+
+- [GET /api/ladder](/api/ladder) - View the complete ladder
+- [GET /api/player](/api/player) - Look up player data before adding
+- [POST /api/force-refresh](/api/status#force-refresh) - Force immediate refresh after bulk changes

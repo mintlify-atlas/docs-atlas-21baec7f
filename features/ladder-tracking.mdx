@@ -1,0 +1,298 @@
+---
+title: Ladder Tracking
+description: Learn how the ranking system works, from score calculation to queue handling and intelligent caching
+icon: chart-line
+---
+
+The Tullidos SoloQ Ladder tracker uses a sophisticated ranking algorithm that combines tier, division, and LP to create an accurate, real-time leaderboard for your League of Legends friend group.
+
+## Ranking Algorithm
+
+The ranking system calculates a numeric score for each player to enable precise sorting. The core algorithm is implemented in the `rankScore` function:
+
+```javascript server/index.js (line 777)
+function rankScore(player) {
+  if (!player.soloq) return -1;
+  const tierIdx = TIER_ORDER.indexOf(player.soloq.tier);
+  const rankIdx = RANK_ORDER.indexOf(player.soloq.rank);
+  const lp = player.soloq.leaguePoints || 0;
+  return (TIER_ORDER.length - tierIdx) * 10000 + (RANK_ORDER.length - rankIdx) * 100 + lp;
+}
+```
+
+### How It Works
+
+<Steps>
+  <Step title="Tier Weight Calculation">
+    Each tier receives a base score of 10,000 points multiplied by its position in the hierarchy. Challenger gets the highest weight, Iron the lowest.
+  </Step>
+  
+  <Step title="Division Multiplier">
+    Divisions (I through IV) add 100-400 points to the score. Division I players rank higher than Division IV within the same tier.
+  </Step>
+  
+  <Step title="LP Precision">
+    League Points are added directly to the final score, providing granular sorting within the same tier and division.
+  </Step>
+</Steps>
+
+### Tier and Rank Order
+
+The system uses predefined arrays to maintain consistent ordering:
+
+```javascript server/index.js (lines 770-775)
+const TIER_ORDER = [
+  "CHALLENGER", "GRANDMASTER", "MASTER",
+  "DIAMOND", "EMERALD", "PLATINUM",
+  "GOLD", "SILVER", "BRONZE", "IRON",
+];
+const RANK_ORDER = ["I", "II", "III", "IV"];
+```
+
+<Info>
+Players without SoloQ data receive a score of `-1` and are sorted to the bottom of the ladder.
+</Info>
+
+## Queue Support
+
+The ladder tracks both **SoloQ** (queue 420) and **Flex** (queue 440) ranks, but uses SoloQ as the primary ranking mechanism.
+
+### SoloQ Priority
+
+All players are sorted exclusively by their SoloQ ranking. The `rankScore` function only considers `player.soloq` data:
+
+```javascript
+if (!player.soloq) return -1;
+```
+
+### Dual Queue Display
+
+While SoloQ determines ladder position, both queues are fetched and displayed:
+
+```javascript server/index.js (line 731-732)
+const soloq = entries.find((e) => e.queueType === "RANKED_SOLO_5x5") || null;
+const flex  = entries.find((e) => e.queueType === "RANKED_FLEX_SR")  || null;
+```
+
+<CardGroup cols={2}>
+  <Card title="SoloQ" icon="trophy">
+    Primary ranking metric. Determines ladder position.
+  </Card>
+  <Card title="Flex" icon="users">
+    Secondary display. Shows team queue performance.
+  </Card>
+</CardGroup>
+
+## Intelligent Caching System
+
+The ladder cache prevents excessive API calls and provides resilience against rate limits.
+
+### Cache Structure
+
+```javascript server/index.js (lines 291-303)
+const ladderCache = {
+  players: [],
+  rankedMatchesByPuuid: {},
+  playerSnapshotByKey: {},
+  rawDataByPuuid: {},
+  dailyLpByDate: {},
+  lpSnapshotByPlayer: {},
+  refreshCursor: 0,
+  lastUpdatedAt: null,
+  lastError: null,
+  refreshPromise: null,
+};
+```
+
+### Cache Keys
+
+<Accordion title="Player Snapshot Keys">
+The cache uses flexible keys to track players even when their Riot ID changes:
+
+```javascript server/index.js (lines 305-309)
+function getDailyPlayerKey(player) {
+  if (player?.puuid) return `puuid:${player.puuid}`;
+  if (player?.riotId) return `riot:${String(player.riotId).toLowerCase()}`;
+  return null;
+}
+```
+
+This dual-key system ensures data persistence across name changes.
+</Accordion>
+
+### Cache TTL and Refresh
+
+The cache refreshes automatically at a configurable interval:
+
+```javascript server/index.js (line 22)
+const LADDER_CACHE_TTL_MS = Number(process.env.LADDER_CACHE_TTL_MS) || 60 * 1000;
+```
+
+<Note>
+Default cache lifetime is **60 seconds** (60,000ms). The ladder auto-refreshes in the background without blocking API requests.
+</Note>
+
+### Partial Refresh Strategy
+
+Instead of refreshing all players simultaneously, the system uses a **rotating cursor** to update a subset of players on each cycle:
+
+```javascript server/index.js (lines 1000-1010)
+let friendIndexesToRefresh = null;
+if (!forceFull) {
+  friendIndexesToRefresh = new Set();
+  if (friends.length > 0) {
+    const batchSize = Math.min(FRIENDS_PER_REFRESH, friends.length);
+    const start = ladderCache.refreshCursor % friends.length;
+    for (let i = 0; i < batchSize; i += 1) {
+      friendIndexesToRefresh.add((start + i) % friends.length);
+    }
+    ladderCache.refreshCursor = (start + batchSize) % friends.length;
+  }
+}
+```
+
+<Tip>
+By default, `FRIENDS_PER_REFRESH` is set to 2 players per cycle. This spreads API usage evenly over time and prevents rate limit spikes.
+</Tip>
+
+## Persistence and Recovery
+
+The ladder cache is persisted to disk to survive server restarts:
+
+```javascript server/index.js (lines 527-546)
+function saveCacheToFile() {
+  try {
+    fs.writeFileSync(
+      CACHE_FILE,
+      JSON.stringify({
+        players: ladderCache.players,
+        rankedMatchesByPuuid: ladderCache.rankedMatchesByPuuid,
+        playerSnapshotByKey: ladderCache.playerSnapshotByKey,
+        rawDataByPuuid: ladderCache.rawDataByPuuid,
+        dailyLpByDate: ladderCache.dailyLpByDate,
+        lpSnapshotByPlayer: ladderCache.lpSnapshotByPlayer,
+        refreshCursor: ladderCache.refreshCursor,
+        lastUpdatedAt: ladderCache.lastUpdatedAt,
+        lastError: ladderCache.lastError,
+      }, null, 2)
+    );
+  } catch (err) {
+    console.warn("Could not save cache to file:", err.message);
+  }
+}
+```
+
+### Startup Behavior
+
+On server startup, the cache is loaded from `ladder-cache.json`:
+
+```javascript server/index.js (lines 1268-1286)
+const cacheLoadedFromDisk = loadCacheFromFile();
+if (!cacheLoadedFromDisk) {
+  console.log("No cache file found. Ladder will be empty until first refresh.");
+} else if (Array.isArray(ladderCache.players) && ladderCache.players.length > 0) {
+  updateDailyLpTracker(ladderCache.players);
+  saveCacheToFile();
+}
+
+if (RIOT_API_KEY) {
+  if (!cacheLoadedFromDisk) {
+    refreshLadderCache().catch((error) => {
+      console.error("ERROR on first refresh:", error.message);
+    });
+  } else {
+    console.log("Using cached ladder snapshot from disk. Background refresh will run on schedule.");
+  }
+}
+```
+
+<Warning>
+If no cache file exists on startup and the Riot API is unavailable, the ladder will be empty until the first successful API call completes.
+</Warning>
+
+## API Endpoints
+
+### GET /api/ladder
+
+Returns the current ladder with cache metadata:
+
+```javascript server/index.js (lines 1070-1118)
+app.get("/api/ladder", async (req, res) => {
+  // ...
+  const playersWithEmotes = applyFriendEmotesToPlayers(ladderCache.players, friendsForEmotes);
+  res.json({
+    players: playersWithEmotes,
+    cachedAt: ladderCache.lastUpdatedAt,
+    cacheTtlMs: LADDER_CACHE_TTL_MS,
+    stale: Boolean(ladderCache.lastError),
+    lastError: ladderCache.lastError,
+    ddragonVersion: DDRAGON_VERSION,
+  });
+});
+```
+
+<Accordion title="Response Example">
+```json
+{
+  "players": [
+    {
+      "riotId": "Azpy#1337",
+      "puuid": "...",
+      "soloq": {
+        "tier": "DIAMOND",
+        "rank": "II",
+        "leaguePoints": 67,
+        "wins": 142,
+        "losses": 138
+      },
+      "flex": null,
+      "topChampions": ["Ezreal", "Caitlyn", "Jinx"],
+      "mainRole": "BOTTOM"
+    }
+  ],
+  "cachedAt": "2026-03-12T14:30:00.000Z",
+  "cacheTtlMs": 60000,
+  "stale": false,
+  "lastError": null,
+  "ddragonVersion": "14.24.1"
+}
+```
+</Accordion>
+
+### POST /api/force-refresh
+
+Forces an immediate full refresh of all players:
+
+```javascript server/index.js (lines 1241-1253)
+app.post("/api/force-refresh", async (req, res) => {
+  if (!RIOT_API_KEY) return res.status(500).json({ error: "Sin RIOT_API_KEY" });
+  if (ladderCache.refreshPromise) {
+    await ladderCache.refreshPromise.catch(() => {});
+    return res.json({ ok: true, message: "Ya había un refresh en curso, completado", playersCount: ladderCache.players.length });
+  }
+  try {
+    await refreshLadderCache(true);
+    res.json({ ok: true, message: "Refresh completado", playersCount: ladderCache.players.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+```
+
+<Tip>
+Use force-refresh sparingly to avoid hitting rate limits. The automatic partial refresh strategy is designed for continuous operation.
+</Tip>
+
+## Related Features
+
+<CardGroup cols={2}>
+  <Card title="Player Management" icon="users" href="/features/player-management">
+    Learn how to add and track players
+  </Card>
+  <Card title="Daily Activity" icon="calendar" href="/features/daily-activity">
+    Understand daily LP tracking
+  </Card>
+  <Card title="Rate Limiting" icon="shield" href="/features/rate-limiting">
+    See how rate limits are handled
+  </Card>
+</CardGroup>
